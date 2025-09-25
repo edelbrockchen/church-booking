@@ -1,0 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.btn { @apply inline-flex items-center gap-2 rounded-xl2 px-4 py-2 text-sm font-medium shadow-soft transition bg-brand-600 text-white hover:bg-brand-700; }
+.btn-ghost { @apply inline-flex items-center gap-2 rounded-xl2 px-4 py-2 text-sm font-medium transition hover:bg-slate-100; }
+.card { @apply rounded-xl2 border border-slate-200 bg-white p-4 shadow-soft; }
