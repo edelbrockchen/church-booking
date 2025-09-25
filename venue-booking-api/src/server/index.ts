@@ -1,8 +1,9 @@
 import 'dotenv/config'
 import express from 'express'
+import type { RequestHandler } from 'express'   // ← 新增：帶入一致的 RequestHandler 型別
 import session from 'express-session'
 import Redis from 'ioredis'
-import RedisStore from 'connect-redis'   // ← 這裡改成預設匯入 class
+import RedisStore from 'connect-redis'
 import cors from 'cors'
 import cookieParser from 'cookie-parser'
 import helmet from 'helmet'
@@ -26,7 +27,7 @@ let sessionMiddleware: ReturnType<typeof session>
 
 if (process.env.REDIS_URL) {
   const redis = new Redis(process.env.REDIS_URL)
-  const store = new RedisStore({ client: redis as any })  // ← 以 new 建立 store
+  const store = new RedisStore({ client: redis as any })  // 以 new 建立 store（v7 正確用法）
   sessionMiddleware = session({
     store,
     secret: sessionSecret,
@@ -49,14 +50,14 @@ app.use(sessionMiddleware)
 const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 200 })
 app.use(limiter)
 
-const csrfProtection = csrf({ cookie: true })
+// 這裡用一致的 RequestHandler 型別，避免 TS2769（型別包版本衝突）
+const csrfProtection = csrf({ cookie: true }) as unknown as RequestHandler
 app.get('/api/csrf', csrfProtection, (req, res) => {
-  // 型別上加個保護，避免 TS 抱怨
   const token = (req as any).csrfToken?.() ?? ''
   res.json({ csrfToken: token })
 })
 
-app.get('/api/health', (_req, res)=>res.json({ ok: true }))
+app.get('/api/health', (_req, res) => res.json({ ok: true }))
 
 app.use('/api/bookings', bookingsRouter)
 app.use('/api/admin', adminRouter)
