@@ -2,7 +2,7 @@ import { makePool } from './db'
 
 async function main() {
   const pool = makePool()
-  if (!pool) { 
+  if (!pool) {
     console.log('[migrate] skipped (no DATABASE_URL)')
     return
   }
@@ -14,7 +14,7 @@ async function main() {
     // 1) extension
     await c.query('CREATE EXTENSION IF NOT EXISTS btree_gist;')
 
-    // 2) table
+    // 2) table（新建時就含 created_by / category / note）
     await c.query(
       [
         'CREATE TABLE IF NOT EXISTS bookings (',
@@ -26,18 +26,23 @@ async function main() {
         "  status TEXT NOT NULL DEFAULT 'pending',",
         '  reviewed_at TIMESTAMPTZ,',
         '  reviewed_by TEXT,',
-        '  rejection_reason TEXT',
+        '  rejection_reason TEXT,',
+        '  category TEXT,',
+        '  note TEXT',
         ');'
       ].join('\n')
     )
 
-    // 3) columns (idempotent)
+    // 3) columns（既有表補欄位：安全可重複執行）
     await c.query("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';")
     await c.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;')
     await c.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS reviewed_by TEXT;')
     await c.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS rejection_reason TEXT;')
+    await c.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS created_by TEXT;')
+    await c.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS category TEXT;')
+    await c.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS note TEXT;')
 
-    // 4) exclusion constraint (guarded create)
+    // 4) exclusion constraint（避免時間重疊）
     await c.query(
       [
         'DO $$',

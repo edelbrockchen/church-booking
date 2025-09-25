@@ -6,45 +6,66 @@ import { randomUUID } from 'node:crypto'
 export const bookingsRouter = Router()
 const pool = makePool()
 
-const schema = z.object({ start: z.string().datetime() })
+// 可接受的分類（也可放寬為任意字串）
+const AllowedCategories = ['教會聚會', '婚禮', '研習', '其他'] as const
 
-function addHours(d: Date, h: number){ return new Date(d.getTime() + h * 3600_000) }
-function isSunday(d: Date){ return d.getDay() === 0 }
-function latestEnd(d: Date){
+const createSchema = z.object({
+  start: z.string().datetime(),
+  // 下列皆為選填；若前端沒傳，後端也會給預設值
+  category: z
+    .string()
+    .trim()
+    .optional()
+    .transform(v => (v && v.length ? v : undefined))
+    .refine(v => !v || AllowedCategories.includes(v as any), { message: 'invalid_category' }),
+  note: z.string().trim().max(200).optional(),
+  created_by: z.string().trim().max(100).optional()
+})
+
+function addHours(d: Date, h: number) { return new Date(d.getTime() + h * 3600_000) }
+function isSunday(d: Date) { return d.getDay() === 0 }
+function latestEnd(d: Date) {
   const day = d.getDay()
   // 週一 / 週三 最晚 18:00；其餘 21:30
   return (day === 1 || day === 3) ? { hour: 18, minute: 0 } : { hour: 21, minute: 30 }
 }
 
 bookingsRouter.post('/', async (req, res) => {
-  const p = schema.safeParse(req.body)
-  if(!p.success) return res.status(400).json({ error: 'invalid_payload', details: p.error.issues })
+  const p = createSchema.safeParse(req.body)
+  if (!p.success) return res.status(400).json({ error: 'invalid_payload', details: p.error.issues })
 
   const start = new Date(p.data.start)
-  if(isNaN(start.getTime())) return res.status(400).json({ error: 'invalid_start' })
-  if(isSunday(start)) return res.status(400).json({ error: 'sunday_disabled' })
+  if (isNaN(start.getTime())) return res.status(400).json({ error: 'invalid_start' })
+  if (isSunday(start)) return res.status(400).json({ error: 'sunday_disabled' })
 
-  // 規則：原則 +3 小時；若超過當日上限則截短
+  // 3 小時原則；一/三最晚 18:00，其餘 21:30，超過則截短
   const targetEnd = addHours(start, 3)
   const { hour, minute } = latestEnd(start)
   const cap = new Date(start); cap.setHours(hour, minute, 0, 0)
   const end = targetEnd.getTime() > cap.getTime() ? cap : targetEnd
   const truncated = end.getTime() < targetEnd.getTime()
 
-  // 無 DB（本機或未設 DATABASE_URL）走記憶體路徑
-  if(!pool){
+  const category = (p.data.category as (typeof AllowedCategories)[number] | undefined) ?? undefined
+  const note = p.data.note ?? undefined
+  const created_by = p.data.created_by ?? undefined
+
+  if (!pool) {
+    // 無 DB 時的 demo 回覆
     return res.status(201).json({
       id: 'demo-' + Math.random().toString(36).slice(2),
       start: start.toISOString(),
       end: end.toISOString(),
       truncated,
       persisted: false,
-      status: 'pending'
+      status: 'pending',
+      category: category ?? 'default',
+      note: note ?? '',
+      created_by: created_by ?? ''
     })
   }
 
   const c = await pool.connect()
-  try{
+  try {
     await c.query('BEGIN')
 
     // 檢查重疊
@@ -54,16 +75,16 @@ bookingsRouter.post('/', async (req, res) => {
        LIMIT 1`,
       [start.toISOString(), end.toISOString()]
     )
-    if(overlap.rows.length > 0){
+    if (overlap.rows.length > 0) {
       await c.query('ROLLBACK')
       return res.status(409).json({ error: 'overlap' })
     }
 
     const id = randomUUID()
     await c.query(
-      `INSERT INTO bookings (id, start_ts, end_ts, created_by, status)
-       VALUES ($1, $2, $3, $4, 'pending')`,
-      [id, start.toISOString(), end.toISOString(), null]
+      `INSERT INTO bookings (id, start_ts, end_ts, created_by, status, category, note)
+       VALUES ($1, $2, $3, $4, 'pending', $5, $6)`,
+      [id, start.toISOString(), end.toISOString(), created_by ?? null, category ?? null, note ?? null]
     )
 
     await c.query('COMMIT')
@@ -73,9 +94,12 @@ bookingsRouter.post('/', async (req, res) => {
       end: end.toISOString(),
       truncated,
       persisted: true,
-      status: 'pending'
+      status: 'pending',
+      category: category ?? 'default',
+      note: note ?? '',
+      created_by: created_by ?? ''
     })
-  } catch(e: any){
+  } catch (e: any) {
     await c.query('ROLLBACK')
     if (e?.constraint === 'no_overlap') {
       return res.status(409).json({ error: 'overlap' })
@@ -88,9 +112,9 @@ bookingsRouter.post('/', async (req, res) => {
 })
 
 bookingsRouter.get('/', async (_req, res) => {
-  if(!pool) return res.json({ items: [] })
+  if (!pool) return res.json({ items: [] })
   const { rows } = await pool.query(`
-    SELECT id, start_ts, end_ts, created_at, created_by, status, reviewed_at, reviewed_by, rejection_reason
+    SELECT id, start_ts, end_ts, created_at, created_by, status, reviewed_at, reviewed_by, rejection_reason, category, note
     FROM bookings
     ORDER BY start_ts ASC
   `)
@@ -98,9 +122,9 @@ bookingsRouter.get('/', async (_req, res) => {
 })
 
 bookingsRouter.get('/approved', async (_req, res) => {
-  if(!pool) return res.json({ items: [] })
+  if (!pool) return res.json({ items: [] })
   const { rows } = await pool.query(`
-    SELECT id, start_ts, end_ts, created_at, created_by
+    SELECT id, start_ts, end_ts, created_by, category, note
     FROM bookings
     WHERE status = 'approved'
     ORDER BY start_ts ASC
