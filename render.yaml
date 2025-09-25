@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: venue-booking-api
+    runtime: node
+    rootDir: venue-booking-api
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_VERSION
+        value: 20.19.5
+      - key: CORS_ORIGIN
+        value: https://your-frontend.onrender.com
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: ADMIN_PASSWORD
+        generateValue: true
+      - key: DATABASE_URL
+        value: postgres://YOUR_USER:YOUR_PASS@YOUR_HOST:5432/YOUR_DB
+
+  - type: web
+    name: venue-booking-frontend
+    runtime: static
+    rootDir: venue-booking-frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://your-backend.onrender.com
