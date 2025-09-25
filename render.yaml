@@ -15,7 +15,7 @@ services:
       - key: ADMIN_PASSWORD
         generateValue: true
       - key: DATABASE_URL
-        value: postgres://YOUR_USER:YOUR_PASS@YOUR_HOST:5432/YOUR_DB
+        value: psql 'postgresql://neondb_owner:npg_iOtv3yJjxY2I@ep-icy-block-adf4etsv-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require'
 
   - type: web
     name: venue-booking-frontend
