@@ -2,76 +2,108 @@ import React, { useEffect, useMemo, useState } from 'react'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
+/** 後端回傳格式（保持相容：category / note 可能不存在） */
 type ApprovedItem = {
   id: string
-  start_ts: string // ISO
-  end_ts: string   // ISO
+  start_ts: string
+  end_ts: string
   created_by?: string | null
+  category?: string | null // 事件分類（選填）
+  note?: string | null     // 備註（選填）
+}
+
+/** 內部切片後顯示用 */
+type DayPiece = {
+  id: string
+  dayKey: string           // YYYY-MM-DD
+  start: Date
+  end: Date
+  created_by?: string | null
+  category?: string | null
+  note?: string | null
 }
 
 type MonthKey = { y: number; m: number } // m: 0-11
+type ViewMode = 'month' | 'week' | 'day'
 
-// 工具：當地時區格式
-function fmtDate(d: Date) { return d.toLocaleDateString() }
+/* ====== 小工具 ====== */
 function fmtTime(d: Date) { return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
+function ymd(d: Date) { return d.toISOString().slice(0, 10) } // 方便做鍵（顯示仍採瀏覽器時區）
+function startOfWeek(d: Date) {
+  const x = new Date(d); const wd = x.getDay(); // 0(日)~6(六)
+  x.setDate(x.getDate() - wd); x.setHours(0,0,0,0)
+  return x
+}
+function addDays(d: Date, n: number) { const x = new Date(d); x.setDate(x.getDate()+n); return x }
 
-// 取當月的 6 週格（前後補齊，像 Google Calendar）
+/** 產生月曆 6 週（像 Google Calendar） */
 function buildMonthGrid(key: MonthKey) {
   const first = new Date(key.y, key.m, 1)
-  const startDay = first.getDay() // 0(日)~6(六)
-  // 以週一為首看起來也很好，不過此處沿用週日為首（和台灣 Google Calendar 預設一致）
-  const gridStart = new Date(first)
-  gridStart.setDate(first.getDate() - startDay) // 從這天開始畫 6*7 = 42 格
-
+  const gridStart = startOfWeek(first) // 以週日為首
   const days: Date[] = []
-  for (let i = 0; i < 42; i++) {
-    const d = new Date(gridStart)
-    d.setDate(gridStart.getDate() + i)
-    days.push(d)
-  }
+  for (let i = 0; i < 42; i++) days.push(addDays(gridStart, i))
   return days
 }
 
-// 把跨日事件切成「每天」的片段，方便放進日格
-function splitByDay(item: ApprovedItem) {
-  const start = new Date(item.start_ts)
-  const end = new Date(item.end_ts)
-  const pieces: { id: string; dayKey: string; start: Date; end: Date }[] = []
-  // 安全保護
-  if (isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start) return pieces
+/** 把跨日事件切成以「日」為單位的片段，方便塞進日格 */
+function splitByDay(item: ApprovedItem): DayPiece[] {
+  const s = new Date(item.start_ts)
+  const e = new Date(item.end_ts)
+  const out: DayPiece[] = []
+  if (isNaN(s.getTime()) || isNaN(e.getTime()) || e <= s) return out
 
-  let cur = new Date(start)
-  while (cur < end) {
-    const dayEnd = new Date(cur)
-    dayEnd.setHours(23, 59, 59, 999)
-    const segEnd = end < dayEnd ? end : dayEnd
-
-    const dayKey = cur.toISOString().slice(0, 10) // YYYY-MM-DD（UTC 切鍵，但顯示使用在地時間即可）
-    pieces.push({ id: item.id, dayKey, start: new Date(cur), end: new Date(segEnd) })
-
-    // 下一天 00:00
-    const next = new Date(cur)
-    next.setDate(cur.getDate() + 1)
-    next.setHours(0, 0, 0, 0)
+  let cur = new Date(s)
+  while (cur < e) {
+    const dayEnd = new Date(cur); dayEnd.setHours(23,59,59,999)
+    const segEnd = e < dayEnd ? e : dayEnd
+    out.push({
+      id: item.id,
+      dayKey: ymd(cur),
+      start: new Date(cur),
+      end: new Date(segEnd),
+      created_by: item.created_by ?? undefined,
+      category: item.category ?? undefined,
+      note: item.note ?? undefined
+    })
+    const next = new Date(cur); next.setDate(cur.getDate()+1); next.setHours(0,0,0,0)
     cur = next
   }
-  return pieces
+  return out
 }
 
+/** 類別顏色（可按需增修）。沒有 category 就用 'default'。 */
+const CATEGORY_STYLE: Record<string, { chip: string; dot: string; pill: string }> = {
+  default:  { chip: 'bg-brand-100 text-brand-700', dot: 'bg-brand-600',  pill: 'bg-brand-600 text-white' },
+  教會聚會: { chip: 'bg-emerald-100 text-emerald-700', dot: 'bg-emerald-600', pill: 'bg-emerald-600 text-white' },
+  婚禮:     { chip: 'bg-rose-100 text-rose-700',       dot: 'bg-rose-600',    pill: 'bg-rose-600 text-white' },
+  研習:     { chip: 'bg-indigo-100 text-indigo-700',   dot: 'bg-indigo-600',  pill: 'bg-indigo-600 text-white' },
+  其他:     { chip: 'bg-amber-100 text-amber-700',     dot: 'bg-amber-600',   pill: 'bg-amber-600 text-white' }
+}
+
+/** 取得類別樣式（含 fallback） */
+function catStyle(category?: string | null) {
+  if (!category) return CATEGORY_STYLE.default
+  return CATEGORY_STYLE[category] ?? CATEGORY_STYLE.default
+}
+
+/* ====== 主元件 ====== */
 export default function CalendarPage() {
-  const today = new Date()
-  const [month, setMonth] = useState<MonthKey>({ y: today.getFullYear(), m: today.getMonth() })
+  const now = new Date()
+  const [mode, setMode] = useState<ViewMode>('month')
+  const [month, setMonth] = useState<MonthKey>({ y: now.getFullYear(), m: now.getMonth() })
+  const [anchor, setAnchor] = useState<Date>(startOfWeek(now)) // 週/日模式的定位點（週首日）
   const [items, setItems] = useState<ApprovedItem[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setErr] = useState<string | null>(null)
+  const [active, setActive] = useState<DayPiece | null>(null) // 事件詳情卡
 
-  const days = useMemo(() => buildMonthGrid(month), [month])
+  const monthDays = useMemo(() => buildMonthGrid(month), [month])
+  const weekDays  = useMemo(() => Array.from({length:7}, (_,i) => addDays(anchor, i)), [anchor])
 
   useEffect(() => {
     let mounted = true
-    async function load() {
-      setLoading(true)
-      setErr(null)
+    ;(async () => {
+      setLoading(true); setErr(null)
       try {
         const r = await fetch(`${API_BASE}/api/bookings/approved`, { credentials: 'include' })
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
@@ -82,124 +114,269 @@ export default function CalendarPage() {
       } finally {
         if (mounted) setLoading(false)
       }
-    }
-    load()
+    })()
     return () => { mounted = false }
   }, [])
 
-  // 依日分組（跨日切片後再分組）
+  /** 把所有事件切片後按日分組並排序 */
   const byDay = useMemo(() => {
-    const map = new Map<string, { id: string; start: Date; end: Date }[]>()
+    const map = new Map<string, DayPiece[]>()
     for (const it of items) {
       for (const seg of splitByDay(it)) {
         const list = map.get(seg.dayKey) ?? []
-        list.push({ id: seg.id, start: seg.start, end: seg.end })
-        map.set(seg.dayKey, list)
+        list.push(seg); map.set(seg.dayKey, list)
       }
     }
-    // 每日依開始時間排序
     for (const [k, list] of map) {
-      list.sort((a, b) => a.start.getTime() - b.start.getTime())
+      list.sort((a,b) => a.start.getTime() - b.start.getTime())
       map.set(k, list)
     }
     return map
   }, [items])
 
-  function prevMonth() {
-    setMonth((cur) => {
-      const d = new Date(cur.y, cur.m, 1); d.setMonth(cur.m - 1)
-      return { y: d.getFullYear(), m: d.getMonth() }
-    })
+  /* ====== 導覽控制 ====== */
+  function prev() {
+    if (mode === 'month') {
+      const d = new Date(month.y, month.m, 1); d.setMonth(month.m - 1)
+      setMonth({ y: d.getFullYear(), m: d.getMonth() })
+    } else if (mode === 'week') {
+      setAnchor(addDays(anchor, -7))
+    } else {
+      setAnchor(addDays(anchor, -1))
+    }
   }
-  function nextMonth() {
-    setMonth((cur) => {
-      const d = new Date(cur.y, cur.m, 1); d.setMonth(cur.m + 1)
-      return { y: d.getFullYear(), m: d.getMonth() }
-    })
+  function next() {
+    if (mode === 'month') {
+      const d = new Date(month.y, month.m, 1); d.setMonth(month.m + 1)
+      setMonth({ y: d.getFullYear(), m: d.getMonth() })
+    } else if (mode === 'week') {
+      setAnchor(addDays(anchor, 7))
+    } else {
+      setAnchor(addDays(anchor, 1))
+    }
   }
-  function thisMonth() {
-    const d = new Date()
-    setMonth({ y: d.getFullYear(), m: d.getMonth() })
+  function today() {
+    const t = new Date()
+    if (mode === 'month') setMonth({ y: t.getFullYear(), m: t.getMonth() })
+    else setAnchor(startOfWeek(t))
   }
 
   const monthLabel = new Date(month.y, month.m, 1).toLocaleDateString([], { year: 'numeric', month: 'long' })
-  const weekLabels = ['日', '一', '二', '三', '四', '五', '六']
+  const weekLabel = `${weekDays[0].toLocaleDateString()} ~ ${weekDays[6].toLocaleDateString()}`
+  const dayLabel  = anchor.toLocaleDateString()
+  const tzLabel   = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const weekNames = ['日','一','二','三','四','五','六']
 
+  /* ====== UI ====== */
   return (
     <div className="space-y-4">
       {/* 控制列 */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
-          <button className="btn-ghost" onClick={prevMonth}>← 上個月</button>
-          <button className="btn-ghost" onClick={thisMonth}>今天</button>
-          <button className="btn-ghost" onClick={nextMonth}>下個月 →</button>
+          <button className="btn-ghost" onClick={prev}>← 上一個</button>
+          <button className="btn-ghost" onClick={today}>今天</button>
+          <button className="btn-ghost" onClick={next}>下一個 →</button>
         </div>
-        <div className="text-lg font-semibold">{monthLabel}</div>
-        <div className="text-xs text-slate-500">
-          時區：{Intl.DateTimeFormat().resolvedOptions().timeZone}
+
+        <div className="flex items-center gap-2 text-lg font-semibold">
+          {mode === 'month' && monthLabel}
+          {mode === 'week'  && `本週：${weekLabel}`}
+          {mode === 'day'   && `這一天：${dayLabel}`}
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-500">時區：{tzLabel}</span>
+          <div className="border-l h-5 mx-2" />
+          <div className="inline-flex rounded-xl2 border border-slate-300 overflow-hidden">
+            <button className={`px-3 py-1 text-sm ${mode==='month'?'bg-slate-200':''}`} onClick={()=>setMode('month')}>月</button>
+            <button className={`px-3 py-1 text-sm ${mode==='week'?'bg-slate-200':''}`}  onClick={()=>setMode('week')}>週</button>
+            <button className={`px-3 py-1 text-sm ${mode==='day'?'bg-slate-200':''}`}   onClick={()=>setMode('day')}>日</button>
+          </div>
         </div>
       </div>
 
       {/* 載入／錯誤 */}
       {loading && <div className="card text-sm text-slate-600">載入中…</div>}
-      {error && <div className="card text-sm text-rose-600">載入失敗：{error}</div>}
+      {error   && <div className="card text-sm text-rose-600">載入失敗：{error}</div>}
 
-      {/* 月曆 */}
-      <div className="grid grid-cols-7 gap-px rounded-xl2 overflow-hidden border border-slate-200 bg-slate-200">
-        {/* 週標 */}
-        {weekLabels.map(w => (
-          <div key={w} className="bg-slate-50 px-2 py-1 text-center text-xs font-medium text-slate-500">{w}</div>
+      {/* 視圖 */}
+      {mode === 'month' && (
+        <MonthView days={monthDays} byDay={byDay} currentMonth={month.m} onPick={setActive} />
+      )}
+      {mode === 'week' && (
+        <WeekView days={weekDays} byDay={byDay} onPick={setActive} />
+      )}
+      {mode === 'day' && (
+        <DayView day={anchor} byDay={byDay} onPick={setActive} />
+      )}
+
+      {/* 類別圖例（僅示意幾種） */}
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-slate-500 mr-1">圖例：</span>
+        {Object.entries(CATEGORY_STYLE).map(([name, st]) => (
+          <span key={name} className={`inline-flex items-center gap-1 rounded-full px-2 py-1 ${st.chip}`}>
+            <span className={`size-2 rounded-full ${st.dot}`} />
+            {name}
+          </span>
         ))}
-
-        {/* 日格（6 週 * 7 天） */}
-        {days.map((d, idx) => {
-          const inMonth = d.getMonth() === month.m
-          const isToday = d.toDateString() === new Date().toDateString()
-          const dayKey = d.toISOString().slice(0, 10)
-          const dayEvents = byDay.get(dayKey) ?? []
-
-          return (
-            <div
-              key={idx}
-              className={[
-                'min-h-28 bg-white p-2',
-                !inMonth ? 'bg-slate-50 text-slate-400' : '',
-                'relative'
-              ].join(' ')}
-            >
-              {/* 日期角標 */}
-              <div className="flex items-center justify-between">
-                <div className={[
-                  'inline-flex items-center justify-center size-6 rounded-full text-xs',
-                  isToday ? 'bg-brand-600 text-white font-semibold shadow-soft' : 'text-slate-700'
-                ].join(' ')}>
-                  {d.getDate()}
-                </div>
-                {/* 當日事件數量 */}
-                {dayEvents.length > 0 && (
-                  <div className="text-[10px] text-slate-500">共 {dayEvents.length} 筆</div>
-                )}
-              </div>
-
-              {/* 事件列表 */}
-              <div className="mt-1 space-y-1">
-                {dayEvents.slice(0, 4).map(ev => (
-                  <div key={`${ev.id}-${ev.start.toISOString()}`} className="truncate rounded-md bg-brand-100 px-2 py-1 text-xs text-brand-700">
-                    {fmtTime(ev.start)}–{fmtTime(ev.end)}
-                  </div>
-                ))}
-                {dayEvents.length > 4 && (
-                  <div className="text-[10px] text-slate-500">… 還有 {dayEvents.length - 4} 筆</div>
-                )}
-              </div>
-            </div>
-          )
-        })}
       </div>
 
-      {/* 備註 */}
-      <div className="text-xs text-slate-500">
-        僅顯示「已核准」的借用。時間皆依瀏覽器的在地時區呈現。
+      {/* 事件詳情卡（Modal） */}
+      {active && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onClick={()=>setActive(null)}>
+          <div className="card max-w-md w-full" onClick={(e)=>e.stopPropagation()}>
+            <div className="mb-2 text-lg font-semibold">事件詳情</div>
+            <div className="space-y-1 text-sm">
+              <div><span className="text-slate-500">日期：</span>{active.dayKey}</div>
+              <div><span className="text-slate-500">時間：</span>{fmtTime(active.start)}–{fmtTime(active.end)}</div>
+              <div><span className="text-slate-500">申請人：</span>{active.created_by || '—'}</div>
+              <div><span className="text-slate-500">分類：</span>{active.category || 'default'}</div>
+              {active.note && <div><span className="text-slate-500">備註：</span>{active.note}</div>}
+            </div>
+            <div className="mt-4 text-right">
+              <button className="btn-ghost" onClick={()=>setActive(null)}>關閉</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ====== 子視圖元件 ====== */
+
+function MonthView({
+  days, byDay, currentMonth, onPick
+}: {
+  days: Date[]
+  byDay: Map<string, DayPiece[]>
+  currentMonth: number
+  onPick: (p: DayPiece)=>void
+}) {
+  const weekNames = ['日','一','二','三','四','五','六']
+  return (
+    <div className="grid grid-cols-7 gap-px rounded-xl2 overflow-hidden border border-slate-200 bg-slate-200">
+      {weekNames.map(w=>(
+        <div key={w} className="bg-slate-50 px-2 py-1 text-center text-xs font-medium text-slate-500">{w}</div>
+      ))}
+      {days.map((d, i) => {
+        const inMonth = d.getMonth() === currentMonth
+        const isToday = d.toDateString() === new Date().toDateString()
+        const key = ymd(d)
+        const list = byDay.get(key) ?? []
+        return (
+          <div key={i} className={`min-h-28 bg-white p-2 ${!inMonth ? 'bg-slate-50 text-slate-400':''}`}>
+            <div className="flex items-center justify-between">
+              <div className={[
+                'inline-flex items-center justify-center size-6 rounded-full text-xs',
+                isToday ? 'bg-brand-600 text-white font-semibold shadow-soft' : 'text-slate-700'
+              ].join(' ')}>
+                {d.getDate()}
+              </div>
+              {list.length>0 && <div className="text-[10px] text-slate-500">共 {list.length} 筆</div>}
+            </div>
+            <div className="mt-1 space-y-1">
+              {list.slice(0,4).map(ev=>{
+                const st = catStyle(ev.category)
+                return (
+                  <button
+                    key={`${ev.id}-${ev.start.toISOString()}`}
+                    className={`w-full text-left truncate rounded-md px-2 py-1 text-xs ${st.chip}`}
+                    onClick={()=>onPick(ev)}
+                    title={`${fmtTime(ev.start)}–${fmtTime(ev.end)}`}
+                  >
+                    <span className={`inline-block size-2 rounded-full mr-1 align-middle ${st.dot}`} />
+                    {fmtTime(ev.start)}–{fmtTime(ev.end)}
+                  </button>
+                )
+              })}
+              {list.length>4 && <div className="text-[10px] text-slate-500">… 還有 {list.length-4} 筆</div>}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function WeekView({
+  days, byDay, onPick
+}: {
+  days: Date[]
+  byDay: Map<string, DayPiece[]>
+  onPick: (p: DayPiece)=>void
+}) {
+  return (
+    <div className="grid md:grid-cols-7 grid-cols-1 gap-2">
+      {days.map((d,i)=>{
+        const key = ymd(d)
+        const list = byDay.get(key) ?? []
+        const isToday = d.toDateString() === new Date().toDateString()
+        return (
+          <div key={i} className="card">
+            <div className="mb-2 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className={`size-6 grid place-items-center rounded-full text-xs ${isToday?'bg-brand-600 text-white':'bg-slate-100 text-slate-700'}`}>
+                  {['日','一','二','三','四','五','六'][d.getDay()]}
+                </div>
+                <div className="text-sm">{d.toLocaleDateString()}</div>
+              </div>
+              {list.length>0 && <div className="text-[10px] text-slate-500">共 {list.length} 筆</div>}
+            </div>
+            <div className="space-y-1">
+              {list.map(ev=>{
+                const st = catStyle(ev.category)
+                return (
+                  <button
+                    key={`${ev.id}-${ev.start.toISOString()}`}
+                    className={`w-full text-left truncate rounded-md px-2 py-1 text-xs ${st.chip}`}
+                    onClick={()=>onPick(ev)}
+                    title={`${fmtTime(ev.start)}–${fmtTime(ev.end)}`}
+                  >
+                    <span className={`inline-block size-2 rounded-full mr-1 align-middle ${st.dot}`} />
+                    {fmtTime(ev.start)}–{fmtTime(ev.end)} {ev.category ? `· ${ev.category}` : ''}
+                  </button>
+                )
+              })}
+              {list.length===0 && <div className="text-xs text-slate-400">— 無 —</div>}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function DayView({
+  day, byDay, onPick
+}: {
+  day: Date
+  byDay: Map<string, DayPiece[]>
+  onPick: (p: DayPiece)=>void
+}) {
+  const key = ymd(day)
+  const list = byDay.get(key) ?? []
+  return (
+    <div className="card">
+      <div className="mb-2 text-sm text-slate-600">{day.toLocaleDateString()}（{['日','一','二','三','四','五','六'][day.getDay()]}）</div>
+      <div className="space-y-1">
+        {list.map(ev=>{
+          const st = catStyle(ev.category)
+          return (
+            <button
+              key={`${ev.id}-${ev.start.toISOString()}`}
+              className={`w-full text-left truncate rounded-md px-3 py-2 text-sm ${st.chip}`}
+              onClick={()=>onPick(ev)}
+              title={`${fmtTime(ev.start)}–${fmtTime(ev.end)}`}
+            >
+              <span className={`inline-block size-2 rounded-full mr-2 align-middle ${st.dot}`} />
+              {fmtTime(ev.start)}–{fmtTime(ev.end)}
+              {ev.category ? ` · ${ev.category}` : ''}
+              {ev.created_by ? ` · ${ev.created_by}` : ''}
+            </button>
+          )
+        })}
+        {list.length===0 && <div className="text-sm text-slate-400">今日尚無已核准借用</div>}
       </div>
     </div>
   )
