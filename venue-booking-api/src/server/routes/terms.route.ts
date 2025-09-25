@@ -20,11 +20,13 @@ export function createTermsRouter(pool: Pool) {
 
     const c = await pool.connect()
     try {
-      const q = await c.query(
+      const { rows } = await c.query(
         'SELECT 1 FROM terms_acceptances WHERE user_id = $1 LIMIT 1',
         [userId]
       )
-      return res.json({ accepted: q.rowCount > 0 })
+      // ✅ 改用 rows.length，避免 TS18047（rowCount 可能為 null）
+      const accepted = (rows?.length ?? 0) > 0
+      return res.json({ accepted })
     } catch (e) {
       console.error('[terms][status] db error:', e)
       return res.status(500).json({ error: 'server_error' })
@@ -49,7 +51,7 @@ export function createTermsRouter(pool: Pool) {
         `,
         [userId]
       )
-      return res.json({ ok: true })
+      return res.json({ ok: true, accepted: true })
     } catch (e) {
       console.error('[terms][accept] db error:', e)
       return res.status(500).json({ error: 'server_error' })
