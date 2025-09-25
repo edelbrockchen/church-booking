@@ -3,6 +3,7 @@ services:
     name: venue-booking-api
     env: node
     rootDir: venue-booking-api
+    plan: free
     buildCommand: npm ci && npm run build
     startCommand: npm run start
     envVars:
