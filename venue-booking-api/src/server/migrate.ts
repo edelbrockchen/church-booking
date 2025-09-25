@@ -1,35 +1,68 @@
-await c.query('BEGIN');
-await c.query('CREATE EXTENSION IF NOT EXISTS btree_gist;');
+import { makePool } from './db'
 
-await c.query(`
-  CREATE TABLE IF NOT EXISTS bookings (
-    id UUID PRIMARY KEY,
-    start_ts TIMESTAMPTZ NOT NULL,
-    end_ts   TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    created_by TEXT,
-    status TEXT NOT NULL DEFAULT 'pending',         -- pending | approved | rejected
-    reviewed_at TIMESTAMPTZ,
-    reviewed_by TEXT,
-    rejection_reason TEXT
-  );
-`);
+async function main() {
+  const pool = makePool()
+  if (!pool) { 
+    console.log('[migrate] skipped (no DATABASE_URL)')
+    return
+  }
 
--- 補欄位（舊表用）
-await c.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';`);
-await c.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;`);
-await c.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS reviewed_by TEXT;`);
-await c.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS rejection_reason TEXT;`);
+  const c = await pool.connect()
+  try {
+    await c.query('BEGIN')
 
-await c.query(`
-  DO $$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='no_overlap') THEN
-      ALTER TABLE bookings
-      ADD CONSTRAINT no_overlap EXCLUDE USING gist (
-        tstzrange(start_ts, end_ts, '[)') WITH &&
-      );
-    END IF;
-  END $$;
-`);
+    // 1) extension
+    await c.query('CREATE EXTENSION IF NOT EXISTS btree_gist;')
 
-await c.query('COMMIT');
+    // 2) table
+    await c.query(
+      [
+        'CREATE TABLE IF NOT EXISTS bookings (',
+        '  id UUID PRIMARY KEY,',
+        '  start_ts TIMESTAMPTZ NOT NULL,',
+        '  end_ts   TIMESTAMPTZ NOT NULL,',
+        '  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),',
+        '  created_by TEXT,',
+        "  status TEXT NOT NULL DEFAULT 'pending',",
+        '  reviewed_at TIMESTAMPTZ,',
+        '  reviewed_by TEXT,',
+        '  rejection_reason TEXT',
+        ');'
+      ].join('\n')
+    )
+
+    // 3) columns (idempotent)
+    await c.query("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';")
+    await c.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;')
+    await c.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS reviewed_by TEXT;')
+    await c.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS rejection_reason TEXT;')
+
+    // 4) exclusion constraint (guarded create)
+    await c.query(
+      [
+        'DO $$',
+        'BEGIN',
+        "  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'no_overlap') THEN",
+        '    ALTER TABLE bookings',
+        "    ADD CONSTRAINT no_overlap EXCLUDE USING gist (",
+        "      tstzrange(start_ts, end_ts, '[)') WITH &&",
+        '    );',
+        '  END IF;',
+        'END',
+        '$$;'
+      ].join('\n')
+    )
+
+    await c.query('COMMIT')
+    console.log('[migrate] done')
+  } catch (e) {
+    await c.query('ROLLBACK')
+    console.error('[migrate] failed', e)
+    process.exitCode = 1
+  } finally {
+    c.release()
+    await pool.end()
+  }
+}
+
+main().catch(e => { console.error(e); process.exitCode = 1 })
