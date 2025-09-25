@@ -1,22 +1,24 @@
 services:
+  # 後端 API
   - type: web
     name: venue-booking-api
     runtime: node
     rootDir: venue-booking-api
     buildCommand: npm ci && npm run build
-    startCommand: npm run start
+    startCommand: npm run start   # v3.1 auto-migrates on start
     envVars:
       - key: NODE_VERSION
         value: 20.19.5
       - key: CORS_ORIGIN
-        value: https://your-frontend.onrender.com
+        value: https://your-frontend.onrender.com   # ← 部署好前端後要改成真實網址
       - key: SESSION_SECRET
         generateValue: true
       - key: ADMIN_PASSWORD
         generateValue: true
       - key: DATABASE_URL
-        value: psql 'postgresql://neondb_owner:npg_iOtv3yJjxY2I@ep-icy-block-adf4etsv-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require'
+        value: postgresql://neondb_owner:npg_iOtv3yJjxY2I@ep-icy-block-adf4etsv-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
 
+  # 前端 Static Site
   - type: web
     name: venue-booking-frontend
     runtime: static
@@ -25,4 +27,4 @@ services:
     staticPublishPath: dist
     envVars:
       - key: VITE_API_BASE_URL
-        value: https://your-backend.onrender.com
+        value: https://your-backend.onrender.com   # ← 部署好後端後要改成真實網址
