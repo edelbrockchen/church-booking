@@ -6,17 +6,26 @@ services:
     plan: free
     buildCommand: npm install --include=dev && npm run build
     startCommand: npm run start
+    healthCheckPath: /api/health
     envVars:
       - key: NODE_VERSION
         value: 20.19.5
       - key: CORS_ORIGIN
         value: https://venue-booking-frontend-a3ib.onrender.com
+        # 如需同時支援本機，改成：
+        # value: https://venue-booking-frontend-a3ib.onrender.com,http://localhost:5173
       - key: SESSION_SECRET
         generateValue: true
       - key: ADMIN_PASSWORD
         generateValue: true
+      # 建議加上 REDIS_URL（正式環境）
+      # - key: REDIS_URL
+      #   value: redis://default:<PASSWORD>@<HOST>:<PORT>
       - key: DATABASE_URL
-        value: "postgresql://neondb_owner:npg_iOtv3yJjxY2I@ep-icy-block-adf4etsv-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+        # 請到 Render 介面重新填寫：避免外流連線字串
+        value: "<ROTATE_ME_WITH_NEW_NEON_URL>"
+        # 若你使用原本的字串但遇到連線問題，可嘗試移除 channel_binding：
+        # example: postgresql://user:pass@host/db?sslmode=require
 
   - type: web
     name: venue-booking-frontend
@@ -24,6 +33,14 @@ services:
     rootDir: venue-booking-frontend
     buildCommand: npm install --include=dev && npm run build
     staticPublishPath: dist
+    # 若未來使用 react-router 做 SPA，建議加上：
+    # routes:
+    #   - type: rewrite
+    #     source: /*
+    #     destination: /index.html
     envVars:
       - key: VITE_API_BASE_URL
         value: https://venue-booking-api-rjes.onrender.com
+      # 皮膚（可省略，預設會走 tailwind）
+      # - key: VITE_UI_SKIN
+      #   value: tailwind

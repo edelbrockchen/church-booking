@@ -65,4 +65,70 @@ if (process.env.REDIS_URL) {
       secure: isProd, // HTTPS 才送出 cookie（Render 會是 true）
     },
   })
-  console.log('[api] session st
+  console.log('[api] session store: Redis')
+} else {
+  // MemoryStore 僅適合單節點/開發環境
+  sessionMiddleware = session({
+    secret: sessionSecret,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: isProd,
+    },
+  })
+  console.log('[api] session store: MemoryStore (not for multi-instance/production)')
+}
+app.use(sessionMiddleware)
+
+// 全站節流（保留）
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+})
+app.use(limiter)
+
+// 登入加嚴節流：防止暴力破解
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 分鐘
+  max: 10, // 同一 IP 最多 10 次嘗試
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too_many_login_attempts' },
+})
+app.use('/api/admin/login', loginLimiter)
+
+// CSRF：提供前端取得 token（若你在 /api/* 使用 csurf，保留即可）
+const csrfProtection = csrf({ cookie: true }) as unknown as RequestHandler
+app.get('/api/csrf', csrfProtection, (req, res) => {
+  const token = (req as any).csrfToken?.() ?? ''
+  res.json({ csrfToken: token })
+})
+
+// 健康檢查
+app.get('/api/health', (_req, res) => res.json({ ok: true }))
+
+// ✅ 建立 DB Pool（供 terms 路由使用；bookings 也可共用）
+const pool = makePool()
+
+// ✅ 掛載 terms API（與前端「軟式門檻」搭配）
+if (pool) {
+  app.use('/api/terms', createTermsRouter(pool))
+  console.log('[api] /api/terms mounted')
+} else {
+  console.warn('[api] DATABASE_URL 未設定，/api/terms 未掛載（terms 功能停用）')
+  app.use('/api/terms', (_req, res) => res.status(503).json({ error: 'db_unavailable' }))
+}
+
+// 既有路由
+app.use('/api/bookings', bookingsRouter)
+app.use('/api/admin', adminRouter)
+
+// 監聽
+const PORT = process.env.PORT || 3000
+app.listen(PORT, () => {
+  console.log(`[api] listening on :${PORT}`)
+})
