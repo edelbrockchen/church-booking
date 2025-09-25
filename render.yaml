@@ -10,7 +10,7 @@ services:
       - key: NODE_VERSION
         value: 20.19.5
       - key: CORS_ORIGIN
-        value: https://your-frontend.onrender.com
+        value: https://venue-booking-frontend-a3ib.onrender.com
       - key: SESSION_SECRET
         generateValue: true
       - key: ADMIN_PASSWORD
@@ -26,4 +26,4 @@ services:
     staticPublishPath: dist
     envVars:
       - key: VITE_API_BASE_URL
-        value: https://your-backend.onrender.com
+        value: https://venue-booking-api-rjes.onrender.com
