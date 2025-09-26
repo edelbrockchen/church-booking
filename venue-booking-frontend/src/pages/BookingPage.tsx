@@ -28,8 +28,6 @@ function fmtLocal(d?: Date | null) {
 function parseLocal(v: string) { const d = new Date(v); return isNaN(d.getTime()) ? null : d }
 function* daysBetween(a: Date, b: Date) { const d = new Date(a); while (d <= b) { yield new Date(d); d.setDate(d.getDate() + 1) } }
 function withinTwoWeeks(a: Date, b: Date) { const days = Math.floor((b.getTime() - a.getTime()) / 86400000) + 1; return days > 0 && days <= MAX_DAYS }
-
-// 用於顯示時間（HH:mm）
 function hhmm(d: Date) { return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` }
 
 export default function BookingPage() {
@@ -52,7 +50,6 @@ export default function BookingPage() {
   const [rangeStart, setRangeStart] = useState<string>('') // date
   const [rangeEnd, setRangeEnd] = useState<string>('')
   const [timeHHMM, setTimeHHMM] = useState<string>('') // 例如 "16:00"
-  // ✅ 預設全部未選
   const [weekday, setWeekday] = useState<Record<Weekday, boolean>>({
     0: false, 1: false, 2: false, 3: false, 4: false, 5: false, 6: false
   })
@@ -60,17 +57,13 @@ export default function BookingPage() {
   const [submitting, setSubmitting] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [okMsg, setOkMsg] = useState<string | null>(null)
-  const [confirmNote, setConfirmNote] = useState<string>('') // 顯示「已套用」訊息
+  const [confirmNote, setConfirmNote] = useState<string>('')
 
   function toggleWD(i: Weekday) { setWeekday(p => ({ ...p, [i]: !p[i] })) }
   function selectWorkdays() { setWeekday({ 0: false, 1: true, 2: true, 3: true, 4: true, 5: true, 6: false }) }
   function selectWeekendNoSun() { setWeekday({ 0: false, 1: false, 2: false, 3: false, 4: false, 5: false, 6: true }) }
   function clearWeekdays() { setWeekday({ 0: false, 1: false, 2: false, 3: false, 4: false, 5: false, 6: false }) }
-
-  function confirmDates() {
-    setConfirmNote('已套用日期/時間設定。')
-    setTimeout(() => setConfirmNote(''), 2000)
-  }
+  function confirmDates() { setConfirmNote('已套用日期/時間設定。'); setTimeout(() => setConfirmNote(''), 2000) }
 
   // 預覽（重複申請才顯示）
   const preview = useMemo(() => {
@@ -80,7 +73,6 @@ export default function BookingPage() {
     const re = rangeEnd ? new Date(rangeEnd) : null
     if (!rs || !re || re < rs) return []
     if (!withinTwoWeeks(rs, re)) return []
-    // 時間來源：複選時使用 timeHHMM
     if (!timeHHMM) return []
     const [hhStr, mmStr] = timeHHMM.split(':')
     const hh = Number(hhStr), mm = Number(mmStr)
@@ -164,9 +156,10 @@ export default function BookingPage() {
   const selectCx =
     `w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 shadow-inner
      focus:outline-none focus:ring-2 focus:ring-[${BRAND}] focus:border-[${BRAND}]`
-  // 1) 送出鈕黑底白字
   const primaryBtnCx =
     `inline-flex items-center rounded-2xl bg-black px-5 py-3 text-white hover:brightness-95 disabled:opacity-60 shadow-md`
+  const confirmBtnCx =
+    `inline-flex items-center rounded-xl bg-black px-4 py-2 text-white text-sm hover:brightness-95`
 
   return (
     <>
@@ -203,37 +196,41 @@ export default function BookingPage() {
           </select>
         </div>
 
-        {/* 單一日期區塊：在「重複申請」開啟時，整塊停用 + 灰階說明 */}
+        {/* 單一日期區塊（開啟「重複申請」時停用） */}
         <fieldset className={`mb-6 ${repeat ? 'opacity-60 pointer-events-none select-none' : ''}`}>
           <legend className="block text-sm font-medium text-slate-700 mb-2">單一日期</legend>
 
-          {/* 開始時間 */}
-          <div className="mb-2">
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              開始時間
-              <span className="ml-2 text-xs text-slate-500">（每日最早 07:00；週一/週三最晚 18:00；其他至 21:30；週日禁用）</span>
-            </label>
+          {/* 開始時間 + 右側「確定」鈕（像你截圖那種） */}
+          <label className="block text-sm font-medium text-slate-700 mb-1">
+            開始時間
+            <span className="ml-2 text-xs text-slate-500">（每日最早 07:00；週一/週三最晚 18:00；其他至 21:30；週日禁用）</span>
+          </label>
+          <div className="relative mb-2">
             <input
               type="datetime-local"
-              className={inputCx}
+              className={`${inputCx} pr-28`}
               value={startAt}
               onChange={e => setStartAt(e.target.value)}
               placeholder="yyyy/MM/dd -- --:--"
             />
+            <button type="button" onClick={confirmDates}
+              className={`${confirmBtnCx} absolute right-2 top-1/2 -translate-y-1/2`}>
+              確定
+            </button>
           </div>
 
-          {/* 結束時間（唯讀，自動=開始+3 小時，並依規範截斷） */}
-          <div className="mb-2">
-            <label className="block text-sm font-medium text-slate-700 mb-1">結束時間（固定起始＋3 小時，唯讀）</label>
-            <input type="datetime-local" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 shadow-inner" value={fmtLocal(autoEnd)} readOnly disabled />
-            <p className="mt-1 text-xs text-slate-500">
-              ＊ 系統固定每次 3 小時，並依規範自動截斷（週一/週三到 18:00；其餘至 21:30）。{truncated && '（此時段已截斷）'}
-            </p>
-          </div>
-
-          <button type="button" onClick={confirmDates} className="mt-2 inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm hover:bg-slate-50">
-            確定
-          </button>
+          {/* 結束時間（唯讀） */}
+          <label className="block text-sm font-medium text-slate-700 mb-1">結束時間（固定起始＋3 小時，唯讀）</label>
+          <input
+            type="datetime-local"
+            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 shadow-inner"
+            value={fmtLocal(autoEnd)}
+            readOnly
+            disabled
+          />
+          <p className="mt-1 text-xs text-slate-500">
+            ＊ 系統固定每次 3 小時，並依規範自動截斷（週一/週三到 18:00；其餘至 21:30）。{truncated && '（此時段已截斷）'}
+          </p>
         </fieldset>
 
         {/* 重複申請 */}
@@ -251,23 +248,29 @@ export default function BookingPage() {
 
           {repeat && (
             <div className="mt-4 space-y-4">
-              <div className="grid gap-4 sm:grid-cols-3">
-                <div className="sm:col-span-1">
-                  <label className="block text-sm font-medium text-slate-700 mb-1">開始日期</label>
-                  <input type="date" className={inputCx} value={rangeStart} onChange={e => setRangeStart(e.target.value)} />
+              {/* 三欄輸入 + 右側確定鈕（手機換行、桌機靠右） */}
+              <div className="flex flex-col sm:flex-row sm:items-end sm:gap-3">
+                <div className="flex-1 grid gap-4 sm:grid-cols-3">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">開始日期</label>
+                    <input type="date" className={inputCx} value={rangeStart} onChange={e => setRangeStart(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">結束日期（最長 2 週）</label>
+                    <input type="date" className={inputCx} value={rangeEnd} onChange={e => setRangeEnd(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">開始時間（HH:mm）</label>
+                    <input type="time" className={inputCx} value={timeHHMM} onChange={e => setTimeHHMM(e.target.value)} placeholder="16:00" />
+                  </div>
                 </div>
-                <div className="sm:col-span-1">
-                  <label className="block text-sm font-medium text-slate-700 mb-1">結束日期（最長 2 週）</label>
-                  <input type="date" className={inputCx} value={rangeEnd} onChange={e => setRangeEnd(e.target.value)} />
-                </div>
-                {/* 5) 複選時間：選擇起始時間（結束時間依規則自動+3並在預覽顯示/截斷） */}
-                <div className="sm:col-span-1">
-                  <label className="block text-sm font-medium text-slate-700 mb-1">開始時間（HH:mm）</label>
-                  <input type="time" className={inputCx} value={timeHHMM} onChange={e => setTimeHHMM(e.target.value)} placeholder="16:00" />
-                </div>
+                <button type="button" onClick={confirmDates}
+                  className={`${confirmBtnCx} mt-3 sm:mt-0 sm:shrink-0`}>
+                  確定
+                </button>
               </div>
 
-              {/* ✅ 指定星期（checkbox pill，顏色不變；週日禁用） */}
+              {/* 指定星期（週日禁用） */}
               <div>
                 <div className="block text-sm font-medium text-slate-700 mb-2">指定星期：</div>
                 <div className="flex flex-wrap gap-2">
@@ -281,7 +284,7 @@ export default function BookingPage() {
                         className="h-4 w-4 rounded border-slate-300"
                         checked={weekday[wd]}
                         onChange={() => toggleWD(wd)}
-                        disabled={wd === 0} // 2) 週日不能選
+                        disabled={wd === 0} // 週日不能選
                       />
                       <span className={wd === 0 ? 'text-slate-400' : ''}>
                         {WDL[wd]}{wd === 0 && <span className="ml-1 text-xs">（週日禁用）</span>}
@@ -292,32 +295,19 @@ export default function BookingPage() {
 
                 {/* 快捷鍵 */}
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={selectWorkdays}
-                    className="px-3 py-1.5 rounded-2xl border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 text-sm"
-                  >
+                  <button type="button" onClick={selectWorkdays}
+                          className="px-3 py-1.5 rounded-2xl border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 text-sm">
                     一鍵選工作日（週一～週五）
                   </button>
-                  <button
-                    type="button"
-                    onClick={selectWeekendNoSun}
-                    className="px-3 py-1.5 rounded-2xl border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 text-sm"
-                  >
+                  <button type="button" onClick={selectWeekendNoSun}
+                          className="px-3 py-1.5 rounded-2xl border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 text-sm">
                     一鍵選週末（排除週日）
                   </button>
-                  <button
-                    type="button"
-                    onClick={clearWeekdays}
-                    className="px-3 py-1.5 rounded-2xl border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 text-sm"
-                  >
+                  <button type="button" onClick={clearWeekdays}
+                          className="px-3 py-1.5 rounded-2xl border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 text-sm">
                     清空
                   </button>
                 </div>
-
-                <button type="button" onClick={confirmDates} className="mt-3 inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm hover:bg-slate-50">
-                  確定
-                </button>
 
                 {/* 預覽清單 */}
                 <div className="mt-4 max-h-56 overflow-auto space-y-2 pr-1">
@@ -338,23 +328,21 @@ export default function BookingPage() {
           )}
         </div>
 
-        {/* 若已開啟重複申請，額外說明以免誤會 */}
         {repeat && (
           <p className="mt-2 text-xs text-slate-500">
             已啟用「重複申請」，上方「單一日期」區塊已停用，實際送出將依複選日期與時間建立多筆申請。
           </p>
         )}
-
         {confirmNote && <div className="mt-3 text-sm text-green-700">{confirmNote}</div>}
       </div>
 
-      {/* 頁面底部操作列（卡片外 → 位置在頁面下方） */}
+      {/* 頁面底部操作列（卡片外 → 頁面下方） */}
       <div className="mt-4 pb-8">
         <button className={primaryBtnCx} disabled={submitting} onClick={submit}>
           {submitting ? '送出中…' : '送出申請單'}
         </button>
 
-        {/* 訊息區（靠近按鈕更醒目） */}
+        {/* 訊息區 */}
         {err && <div className="mt-3 text-sm text-red-600">{err}</div>}
         {okMsg && <div className="mt-3 text-sm text-green-700">{okMsg}</div>}
       </div>
