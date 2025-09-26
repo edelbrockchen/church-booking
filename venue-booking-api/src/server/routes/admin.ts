@@ -17,7 +17,7 @@ function loadAdminUsers(): Record<string, string> {
   return {}
 }
 const adminUsers = loadAdminUsers()
-
+console.log('[admin] loaded admins:', Object.keys(adminUsers))
 
 // （可選）相容舊版的共用明文密碼；若不想保留可把 ADMIN_PASSWORD 從 env 拔除
 const fallbackPassword = process.env.ADMIN_PASSWORD ?? ''
