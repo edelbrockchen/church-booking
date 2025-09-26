@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react'
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
+/** 從 props 接 apiBase，沒有則回退到環境變數（本地可為空字串→走 Vite 代理） */
+type Props = { apiBase?: string }
+
+const ENV_API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
 /** 後端回傳格式（保持相容：category / note 可能不存在） */
 type ApprovedItem = {
@@ -8,14 +11,14 @@ type ApprovedItem = {
   start_ts: string
   end_ts: string
   created_by?: string | null
-  category?: string | null // 事件分類（選填）
-  note?: string | null     // 備註（選填）
+  category?: string | null
+  note?: string | null
 }
 
 /** 內部切片後顯示用 */
 type DayPiece = {
   id: string
-  dayKey: string           // YYYY-MM-DD
+  dayKey: string           // YYYY-MM-DD（本地時區）
   start: Date
   end: Date
   created_by?: string | null
@@ -28,10 +31,20 @@ type ViewMode = 'month' | 'week' | 'day'
 
 /* ====== 小工具 ====== */
 function fmtTime(d: Date) { return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
-function ymd(d: Date) { return d.toISOString().slice(0, 10) } // 方便做鍵（顯示仍採瀏覽器時區）
+
+/** 以「本地時區」產 YYYY-MM-DD（避免 toISOString 造成 UTC 偏移） */
+function ymdLocal(d: Date) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${dd}`
+}
+
 function startOfWeek(d: Date) {
-  const x = new Date(d); const wd = x.getDay(); // 0(日)~6(六)
-  x.setDate(x.getDate() - wd); x.setHours(0,0,0,0)
+  const x = new Date(d)
+  const wd = x.getDay() // 0(日)~6(六) 本地
+  x.setDate(x.getDate() - wd)
+  x.setHours(0, 0, 0, 0)
   return x
 }
 function addDays(d: Date, n: number) { const x = new Date(d); x.setDate(x.getDate()+n); return x }
@@ -45,7 +58,7 @@ function buildMonthGrid(key: MonthKey) {
   return days
 }
 
-/** 把跨日事件切成以「日」為單位的片段，方便塞進日格 */
+/** 把跨日事件切成以「日」為單位的片段，方便塞進日格（本地時區） */
 function splitByDay(item: ApprovedItem): DayPiece[] {
   const s = new Date(item.start_ts)
   const e = new Date(item.end_ts)
@@ -54,18 +67,18 @@ function splitByDay(item: ApprovedItem): DayPiece[] {
 
   let cur = new Date(s)
   while (cur < e) {
-    const dayEnd = new Date(cur); dayEnd.setHours(23,59,59,999)
+    const dayEnd = new Date(cur); dayEnd.setHours(23, 59, 59, 999)
     const segEnd = e < dayEnd ? e : dayEnd
     out.push({
       id: item.id,
-      dayKey: ymd(cur),
+      dayKey: ymdLocal(cur),
       start: new Date(cur),
       end: new Date(segEnd),
       created_by: item.created_by ?? undefined,
       category: item.category ?? undefined,
       note: item.note ?? undefined
     })
-    const next = new Date(cur); next.setDate(cur.getDate()+1); next.setHours(0,0,0,0)
+    const next = new Date(cur); next.setDate(cur.getDate() + 1); next.setHours(0, 0, 0, 0)
     cur = next
   }
   return out
@@ -87,7 +100,8 @@ function catStyle(category?: string | null) {
 }
 
 /* ====== 主元件 ====== */
-export default function CalendarPage() {
+export default function CalendarPage({ apiBase }: Props) {
+  const API_BASE = (apiBase ?? ENV_API_BASE ?? '').replace(/\/+$/, '') // 去尾斜線，避免 //api
   const now = new Date()
   const [mode, setMode] = useState<ViewMode>('month')
   const [month, setMonth] = useState<MonthKey>({ y: now.getFullYear(), m: now.getMonth() })
@@ -102,21 +116,36 @@ export default function CalendarPage() {
 
   useEffect(() => {
     let mounted = true
+    const ac = new AbortController()
     ;(async () => {
       setLoading(true); setErr(null)
       try {
-        const r = await fetch(`${API_BASE}/api/bookings/approved`, { credentials: 'include' })
+        // 你後端若路由不同（例如 /api/bookings），請在這裡對齊
+        const url = `${API_BASE}/api/bookings/approved`
+        // 逾時保護（8 秒）
+        const t = setTimeout(() => ac.abort('timeout'), 8000)
+        const r = await fetch(url, {
+          credentials: 'include', // 若後端用 Session/Cookie 必須帶上
+          headers: { 'Accept': 'application/json' },
+          signal: ac.signal,
+        })
+        clearTimeout(t)
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         const j = await r.json()
-        if (mounted) setItems(Array.isArray(j.items) ? j.items : [])
+        if (mounted) setItems(Array.isArray(j.items) ? j.items : Array.isArray(j) ? j : [])
       } catch (e: any) {
-        if (mounted) setErr(e?.message || '資料載入失敗')
+        // fetch TypeError / abort 多半是 CORS、HTTPS 混合內容或網路中斷
+        const msg =
+          e?.name === 'AbortError' ? '連線逾時（請檢查後端是否可達 / CORS）' :
+          e?.message?.includes('Failed to fetch') ? '連線失敗（可能是 CORS 或 HTTPS 網域不一致）' :
+          e?.message || '資料載入失敗'
+        if (mounted) setErr(msg)
       } finally {
         if (mounted) setLoading(false)
       }
     })()
-    return () => { mounted = false }
-  }, [])
+    return () => { mounted = false; ac.abort() }
+  }, [API_BASE])
 
   /** 把所有事件切片後按日分組並排序 */
   const byDay = useMemo(() => {
@@ -187,7 +216,7 @@ export default function CalendarPage() {
         <div className="flex items-center gap-2">
           <span className="text-xs text-slate-500">時區：{tzLabel}</span>
           <div className="border-l h-5 mx-2" />
-          <div className="inline-flex rounded-xl2 border border-slate-300 overflow-hidden">
+          <div className="inline-flex rounded-2xl border border-slate-300 overflow-hidden">
             <button className={`px-3 py-1 text-sm ${mode==='month'?'bg-slate-200':''}`} onClick={()=>setMode('month')}>月</button>
             <button className={`px-3 py-1 text-sm ${mode==='week'?'bg-slate-200':''}`}  onClick={()=>setMode('week')}>週</button>
             <button className={`px-3 py-1 text-sm ${mode==='day'?'bg-slate-200':''}`}   onClick={()=>setMode('day')}>日</button>
@@ -255,14 +284,14 @@ function MonthView({
 }) {
   const weekNames = ['日','一','二','三','四','五','六']
   return (
-    <div className="grid grid-cols-7 gap-px rounded-xl2 overflow-hidden border border-slate-200 bg-slate-200">
+    <div className="grid grid-cols-7 gap-px rounded-2xl overflow-hidden border border-slate-200 bg-slate-200">
       {weekNames.map(w=>(
         <div key={w} className="bg-slate-50 px-2 py-1 text-center text-xs font-medium text-slate-500">{w}</div>
       ))}
       {days.map((d, i) => {
         const inMonth = d.getMonth() === currentMonth
         const isToday = d.toDateString() === new Date().toDateString()
-        const key = ymd(d)
+        const key = ymdLocal(d)
         const list = byDay.get(key) ?? []
         return (
           <div key={i} className={`min-h-28 bg-white p-2 ${!inMonth ? 'bg-slate-50 text-slate-400':''}`}>
@@ -309,7 +338,7 @@ function WeekView({
   return (
     <div className="grid md:grid-cols-7 grid-cols-1 gap-2">
       {days.map((d,i)=>{
-        const key = ymd(d)
+        const key = ymdLocal(d)
         const list = byDay.get(key) ?? []
         const isToday = d.toDateString() === new Date().toDateString()
         return (
@@ -354,7 +383,7 @@ function DayView({
   byDay: Map<string, DayPiece[]>
   onPick: (p: DayPiece)=>void
 }) {
-  const key = ymd(day)
+  const key = ymdLocal(day)
   const list = byDay.get(key) ?? []
   return (
     <div className="card">

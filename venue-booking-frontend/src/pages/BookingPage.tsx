@@ -1,5 +1,9 @@
 import React, { useMemo, useState } from 'react'
 
+/** ← 新增：可由 App 傳入 apiBase；沒傳則退回到環境變數（本地可為空字串→走 Vite 代理） */
+type Props = { apiBase?: string }
+const ENV_API_BASE = import.meta.env.VITE_API_BASE_URL || ''
+
 // ---- 主題顏色（可改）----
 const BRAND = '#0F6FFF'
 
@@ -30,7 +34,9 @@ function* daysBetween(a: Date, b: Date) { const d = new Date(a); while (d <= b) 
 function withinTwoWeeks(a: Date, b: Date) { const days = Math.floor((b.getTime() - a.getTime()) / 86400000) + 1; return days > 0 && days <= MAX_DAYS }
 function hhmm(d: Date) { return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` }
 
-export default function BookingPage() {
+export default function BookingPage({ apiBase }: Props) {
+  const API_BASE = (apiBase ?? ENV_API_BASE ?? '').replace(/\/+$/, '') // 去尾斜線，避免 //api
+
   // 申請人與場地
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
@@ -129,21 +135,45 @@ export default function BookingPage() {
       }
 
       let success = 0
-      for (const p of payloads) {
-        const r = await fetch('/api/bookings', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify(p),
-        })
-        if (r.ok) success++
-        else {
-          const j = await r.json().catch(() => ({}))
-          if (j?.error === 'must_accept_terms') { setErr('需先同意借用規範後才能申請。'); break }
-          if (r.status === 401) { setErr('未登入或尚未建立使用者，請先登入。'); break }
-          if (j?.error === 'overlap') { setErr('申請時間與既有預約重疊，請調整後再送出。'); break }
+      // 逾時保護
+      const doPost = async (p: any) => {
+        const ac = new AbortController()
+        const timer = setTimeout(() => ac.abort('timeout'), 8000)
+        try {
+          const r = await fetch(`${API_BASE}/api/bookings`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',      // ✅ 一律帶 Cookie（Session）
+            body: JSON.stringify(p),
+            signal: ac.signal,
+          })
+          if (!r.ok) {
+            const j = await r.json().catch(() => ({}))
+            // 與後端約定的錯誤字串（可依你實作微調）
+            if (j?.error === 'must_accept_terms') throw new Error('需先同意借用規範後才能申請。')
+            if (r.status === 401) throw new Error('未登入或尚未建立使用者，請先登入。')
+            if (j?.error?.includes('overlap') || String(j?.error || '').includes('重疊')) throw new Error('申請時間與既有預約重疊，請調整後再送出。')
+            throw new Error(j?.error ? String(j.error) : `HTTP ${r.status}`)
+          }
+        } finally {
+          clearTimeout(timer)
         }
       }
+
+      for (const p of payloads) {
+        try {
+          await doPost(p)
+          success++
+        } catch (e: any) {
+          const msg =
+            e?.name === 'AbortError' ? '連線逾時（請檢查後端是否可達 / CORS）' :
+            e?.message?.includes('Failed to fetch') ? '連線失敗（可能是 CORS 或 HTTPS 網域不一致）' :
+            e?.message || '送出失敗'
+          setErr(msg)
+          break
+        }
+      }
+
       if (success) setOkMsg(`已送出 ${success} 筆申請，待管理者審核。`)
       else if (!err) setErr('申請未成功，請稍後再試。')
     } finally {
@@ -159,7 +189,7 @@ export default function BookingPage() {
     `w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 shadow-inner
      focus:outline-none focus:ring-2 focus:ring-[${BRAND}] focus:border-[${BRAND}]`
   const primaryBtnCx =
-    `block mx-auto rounded-2xl bg-black px-5 py-3 text-white hover:brightness-95 disabled:opacity-60 shadow-md` // ✅ 置中
+    `block mx-auto rounded-2xl bg-black px-5 py-3 text-white hover:brightness-95 disabled:opacity-60 shadow-md`
   const confirmBtnCx =
     `inline-flex items-center rounded-xl bg-black px-4 py-2 text-white text-sm hover:brightness-95`
 
@@ -286,8 +316,7 @@ export default function BookingPage() {
                       <label
                         key={wd}
                         className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-2xl border text-sm
-                                    ${disabled ? 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed' : 'bg-white text-slate-700 border-slate-300'}`}
-                      >
+                                    ${disabled ? 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed' : 'bg-white text-slate-700 border-slate-300'}`}>
                         <input
                           type="checkbox"
                           className="h-4 w-4 rounded border-slate-300"
