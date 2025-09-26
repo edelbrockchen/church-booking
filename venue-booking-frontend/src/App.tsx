@@ -3,12 +3,13 @@ import React, { useState, useEffect } from 'react'
 import { Calendar, BookOpenText, FilePlus2, ShieldCheck } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
-import CalendarPage from './pages/CalendarPage'
-import RulesPage from './pages/RulesPage'
-import BookingPage from './pages/BookingPage'
+// ✅ 所有頁面統一放在 src/pages/
+import CalendarPage from '../pages/CalendarPage'
+import RulesPage from '../pages/RulesPage'
+import BookingPage from '../pages/BookingPage'
 import AdminReviewPage from '../pages/AdminReviewPage'
 
-// ✅ 新增：軟式門檻需要的工具與 Modal
+// ✅ 軟式門檻需要的工具與 Modal
 import { isAgreedLocal, setAgreedLocal, recordAgreementOnServer, fetchAgreementFromServer } from './agree'
 import TermsGateModal from './components/TermsGateModal'
 
@@ -54,7 +55,7 @@ export default function App() {
     }
   }
 
-  // ✅ 若你仍想保留「規範分頁」：在規範頁按下同意時也把狀態寫入，並導到申請
+  // ✅ 在規範頁按下同意時也把狀態寫入，並導到申請
   async function onRulesAgreedFromPage() {
     setAgreedLocal()
     try { await recordAgreementOnServer() } catch {}
@@ -82,7 +83,12 @@ export default function App() {
             <button className="btn-ghost" onClick={() => setTab('rules')}>
               <BookOpenText className="size-4" /> 借用規範
             </button>
-            <button className="btn" onClick={onClickApply} disabled={checking} title={!agreed ? '首次會先顯示借用規範' : '前往申請'}>
+            <button
+              className="btn"
+              onClick={onClickApply}
+              disabled={checking}
+              title={!agreed ? '首次會先顯示借用規範' : '前往申請'}
+            >
               <FilePlus2 className="size-4" /> {checking ? '檢查中…' : '申請借用'}
             </button>
             <button className="btn-ghost" onClick={() => setTab('admin')}>
