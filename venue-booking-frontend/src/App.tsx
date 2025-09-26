@@ -1,15 +1,15 @@
-// src/web/App.tsx
+// src/App.tsx
 import React, { useState, useEffect } from 'react'
 import { Calendar, BookOpenText, FilePlus2, ShieldCheck } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
 // ✅ 所有頁面統一放在 src/pages/
-import CalendarPage from '../pages/CalendarPage'
-import RulesPage from '../pages/RulesPage'
-import BookingPage from '../pages/BookingPage'
-import AdminReviewPage from '../pages/AdminReviewPage'
+import CalendarPage from './pages/CalendarPage'
+import RulesPage from './pages/RulesPage'
+import BookingPage from './pages/BookingPage'
+import AdminReviewPage from './pages/AdminReviewPage'
 
-// ✅ 軟式門檻需要的工具與 Modal
+// ✅ 軟式門檻需要的工具與 Modal（假設檔案在 src/agree.ts 與 src/components/...）
 import { isAgreedLocal, setAgreedLocal, recordAgreementOnServer, fetchAgreementFromServer } from './agree'
 import TermsGateModal from './components/TermsGateModal'
 
@@ -40,19 +40,14 @@ export default function App() {
       }
       if (alive) setChecking(false)
     })()
-    return () => {
-      alive = false
-    }
+    return () => { alive = false }
   }, [])
 
   // ✅ 「申請借用」軟式門檻入口
   function onClickApply() {
     if (checking) return
-    if (agreed) {
-      setTab('apply')
-    } else {
-      setOpenGate(true) // 未同意 → 先彈出借用規範 Modal
-    }
+    if (agreed) setTab('apply')
+    else setOpenGate(true) // 未同意 → 先彈出借用規範 Modal
   }
 
   // ✅ 在規範頁按下同意時也把狀態寫入，並導到申請
@@ -68,7 +63,8 @@ export default function App() {
       <header className="sticky top-0 z-20 bg-white/80 backdrop-blur border-b border-slate-200">
         <div className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-xl2 bg-blue-600 grid place-items-center text-white font-bold shadow">
+            {/* 註：Tailwind 沒有 rounded-xl2，若想要更圓請用 rounded-2xl */}
+            <div className="h-9 w-9 rounded-2xl bg-blue-600 grid place-items-center text-white font-bold shadow">
               NB
             </div>
             <div>
