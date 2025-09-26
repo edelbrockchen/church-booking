@@ -151,163 +151,165 @@ export default function BookingPage() {
     `w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 shadow-inner
      focus:outline-none focus:ring-2 focus:ring-[${BRAND}] focus:border-[${BRAND}]`
   const primaryBtnCx =
-    `inline-flex items-center rounded-xl bg-[${BRAND}] px-5 py-3 text-white hover:brightness-95 disabled:opacity-60`
+    `inline-flex items-center rounded-2xl bg-[${BRAND}] px-5 py-3 text-white hover:brightness-95 disabled:opacity-60 shadow-md`
 
   return (
-    <div className="card">
-      <h2 className="text-lg font-semibold mb-4">填寫借用申請</h2>
+    <>
+      {/* 表單卡片 */}
+      <div className="card">
+        <h2 className="text-lg font-semibold mb-4">填寫借用申請</h2>
 
-      {/* 申請者姓名 */}
-      <div className="mb-5">
-        <label className="block text-sm font-medium text-slate-700 mb-1">申請者</label>
-        <input className={inputCx} value={name} onChange={e => setName(e.target.value)} placeholder="請輸入姓名" />
-      </div>
+        {/* 申請者姓名 */}
+        <div className="mb-5">
+          <label className="block text-sm font-medium text-slate-700 mb-1">申請者</label>
+          <input className={inputCx} value={name} onChange={e => setName(e.target.value)} placeholder="請輸入姓名" />
+        </div>
 
-      {/* Email */}
-      <div className="mb-5">
-        <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
-        <input className={inputCx} value={email} onChange={e => setEmail(e.target.value)} placeholder="name@example.com" type="email" />
-      </div>
+        {/* Email */}
+        <div className="mb-5">
+          <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
+          <input className={inputCx} value={email} onChange={e => setEmail(e.target.value)} placeholder="name@example.com" type="email" />
+        </div>
 
-      {/* 申請事由 */}
-      <div className="mb-5">
-        <label className="block text-sm font-medium text-slate-700 mb-1">申請事由</label>
-        <textarea className={`${inputCx} min-h-28`} value={reason} onChange={e => setReason(e.target.value)} placeholder="請簡述用途（例如：研習活動／婚禮彩排）" />
-      </div>
+        {/* 申請事由 */}
+        <div className="mb-5">
+          <label className="block text-sm font-medium text-slate-700 mb-1">申請事由</label>
+          <textarea className={`${inputCx} min-h-28`} value={reason} onChange={e => setReason(e.target.value)} placeholder="請簡述用途（例如：研習活動／婚禮彩排）" />
+        </div>
 
-      {/* 借用場地 */}
-      <div className="mb-5">
-        <label className="block text-sm font-medium text-slate-700 mb-1">借用場地</label>
-        <select className={selectCx} value={venue} onChange={e => setVenue(e.target.value as Venue)}>
-          <option value="" disabled>請選擇場地</option>
-          <option value="大會堂">大會堂</option>
-          <option value="康樂廳">康樂廳</option>
-          <option value="其它教室">其它教室</option>
-        </select>
-      </div>
+        {/* 借用場地 */}
+        <div className="mb-5">
+          <label className="block text-sm font-medium text-slate-700 mb-1">借用場地</label>
+          <select className={selectCx} value={venue} onChange={e => setVenue(e.target.value as Venue)}>
+            <option value="" disabled>請選擇場地</option>
+            <option value="大會堂">大會堂</option>
+            <option value="康樂廳">康樂廳</option>
+            <option value="其它教室">其它教室</option>
+          </select>
+        </div>
 
-      {/* 開始時間 */}
-      <div className="mb-4">
-        <label className="block text-sm font-medium text-slate-700 mb-1">
-          開始時間
-          <span className="ml-2 text-xs text-slate-500">（每日最早 07:00；週一/週三最晚 18:00；其他至 21:30；週日禁用）</span>
-        </label>
-        <input type="datetime-local" className={inputCx} value={startAt} onChange={e => setStartAt(e.target.value)} placeholder="yyyy/MM/dd -- --:--" />
-      </div>
+        {/* 開始時間 */}
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-slate-700 mb-1">
+            開始時間
+            <span className="ml-2 text-xs text-slate-500">（每日最早 07:00；週一/週三最晚 18:00；其他至 21:30；週日禁用）</span>
+          </label>
+          <input type="datetime-local" className={inputCx} value={startAt} onChange={e => setStartAt(e.target.value)} placeholder="yyyy/MM/dd -- --:--" />
+        </div>
 
-      {/* 結束時間（唯讀，自動=開始+3 小時，並依規範截斷） */}
-      <div className="mb-6">
-        <label className="block text-sm font-medium text-slate-700 mb-1">結束時間（固定起始＋3 小時，唯讀）</label>
-        <input type="datetime-local" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 shadow-inner" value={fmtLocal(autoEnd)} readOnly disabled />
-        <p className="mt-1 text-xs text-slate-500">
-          ＊ 系統固定每次 3 小時，並依規範自動截斷（週一/週三到 18:00；其餘至 21:30）。{truncated && '（此時段已截斷）'}
-        </p>
-      </div>
+        {/* 結束時間（唯讀，自動=開始+3 小時，並依規範截斷） */}
+        <div className="mb-6">
+          <label className="block text-sm font-medium text-slate-700 mb-1">結束時間（固定起始＋3 小時，唯讀）</label>
+          <input type="datetime-local" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-slate-900 shadow-inner" value={fmtLocal(autoEnd)} readOnly disabled />
+          <p className="mt-1 text-xs text-slate-500">
+            ＊ 系統固定每次 3 小時，並依規範自動截斷（週一/週三到 18:00；其餘至 21:30）。{truncated && '（此時段已截斷）'}
+          </p>
+        </div>
 
-      {/* 重複申請 */}
-      <div className="rounded-2xl border border-slate-200 bg-white/70 p-4 mb-6">
-        <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700">
-          <input
-            type="checkbox"
-            className="h-4 w-4 rounded border-slate-300 text-white focus:ring-2"
-            style={{ accentColor: BRAND }}
-            checked={repeat}
-            onChange={e => setRepeat(e.target.checked)}
-          />
-          重複申請（在日期範圍內的指定星期，最長兩週）
-        </label>
+        {/* 重複申請 */}
+        <div className="rounded-2xl border border-slate-200 bg-white/70 p-4 mb-0">
+          <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700">
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-slate-300 text-white focus:ring-2"
+              style={{ accentColor: BRAND }}
+              checked={repeat}
+              onChange={e => setRepeat(e.target.checked)}
+            />
+            重複申請（在日期範圍內的指定星期，最長兩週）
+          </label>
 
-        {repeat && (
-          <div className="mt-4 space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">開始日期</label>
-                <input type="date" className={inputCx} value={rangeStart} onChange={e => setRangeStart(e.target.value)} />
+          {repeat && (
+            <div className="mt-4 space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">開始日期</label>
+                  <input type="date" className={inputCx} value={rangeStart} onChange={e => setRangeStart(e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">結束日期（最長 2 週）</label>
+                  <input type="date" className={inputCx} value={rangeEnd} onChange={e => setRangeEnd(e.target.value)} />
+                </div>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">結束日期（最長 2 週）</label>
-                <input type="date" className={inputCx} value={rangeEnd} onChange={e => setRangeEnd(e.target.value)} />
-              </div>
-            </div>
 
-            {/* ✅ 指定星期（checkbox pill，顏色不變；週日禁用） */}
-            <div>
-              <div className="block text-sm font-medium text-slate-700 mb-2">指定星期：</div>
-              <div className="flex flex-wrap gap-2">
-                {(Object.keys(WDL) as unknown as Weekday[]).map(wd => (
-                  <label
-                    key={wd}
-                    className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-2xl border text-sm
-                                bg-white text-slate-700 border-slate-300`}
+              {/* ✅ 指定星期（checkbox pill，顏色不變；週日禁用） */}
+              <div>
+                <div className="block text-sm font-medium text-slate-700 mb-2">指定星期：</div>
+                <div className="flex flex-wrap gap-2">
+                  {(Object.keys(WDL) as unknown as Weekday[]).map(wd => (
+                    <label
+                      key={wd}
+                      className="inline-flex items-center gap-2 px-3 py-1.5 rounded-2xl border text-sm bg-white text-slate-700 border-slate-300"
+                    >
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-slate-300"
+                        checked={weekday[wd]}
+                        onChange={() => toggleWD(wd)}
+                        disabled={wd === 0} // 週日禁用
+                      />
+                      <span className={wd === 0 ? 'text-slate-400' : ''}>
+                        {WDL[wd]}{wd === 0 && <span className="ml-1 text-xs">（週日禁用）</span>}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+
+                {/* 快捷鍵 */}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={selectWorkdays}
+                    className="px-3 py-1.5 rounded-2xl border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 text-sm"
                   >
-                    <input
-                      type="checkbox"
-                      className="h-4 w-4 rounded border-slate-300"
-                      checked={weekday[wd]}
-                      onChange={() => toggleWD(wd)}
-                      disabled={wd === 0} // 週日禁用
-                    />
-                    <span className={wd === 0 ? 'text-slate-400' : ''}>
-                      {WDL[wd]}{wd === 0 && <span className="ml-1 text-xs">（週日禁用）</span>}
-                    </span>
-                  </label>
-                ))}
-              </div>
+                    一鍵選工作日（週一～週五）
+                  </button>
+                  <button
+                    type="button"
+                    onClick={selectWeekendNoSun}
+                    className="px-3 py-1.5 rounded-2xl border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 text-sm"
+                  >
+                    一鍵選週末（排除週日）
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clearWeekdays}
+                    className="px-3 py-1.5 rounded-2xl border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 text-sm"
+                  >
+                    清空
+                  </button>
+                </div>
 
-              {/* 快捷鍵 */}
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={selectWorkdays}
-                  className="px-3 py-1.5 rounded-2xl border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 text-sm"
-                >
-                  一鍵選工作日（週一～週五）
-                </button>
-                <button
-                  type="button"
-                  onClick={selectWeekendNoSun}
-                  className="px-3 py-1.5 rounded-2xl border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 text-sm"
-                >
-                  一鍵選週末（排除週日）
-                </button>
-                <button
-                  type="button"
-                  onClick={clearWeekdays}
-                  className="px-3 py-1.5 rounded-2xl border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 text-sm"
-                >
-                  清空
-                </button>
-              </div>
-
-              {/* 預覽清單 */}
-              <div className="mt-4 max-h-56 overflow-auto space-y-2 pr-1">
-                {preview.map((it, i) => {
-                  const hm = (d: Date) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-                  return (
-                    <div key={i} className="rounded-xl border border-slate-200 bg-white p-3 text-sm">
-                      <div className="font-medium">{it.date}（{WDL[it.wd]}）</div>
-                      <div className="text-slate-700">
-                        {hm(it.start)} → {hm(it.end)} {it.truncated && <span className="text-amber-600">(依規範截斷)</span>}
+                {/* 預覽清單 */}
+                <div className="mt-4 max-h-56 overflow-auto space-y-2 pr-1">
+                  {preview.map((it, i) => {
+                    const hm = (d: Date) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+                    return (
+                      <div key={i} className="rounded-xl border border-slate-200 bg-white p-3 text-sm">
+                        <div className="font-medium">{it.date}（{WDL[it.wd]}）</div>
+                        <div className="text-slate-700">
+                          {hm(it.start)} → {hm(it.end)} {it.truncated && <span className="text-amber-600">(依規範截斷)</span>}
+                        </div>
                       </div>
-                    </div>
-                  )
-                })}
+                    )
+                  })}
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
-      {/* 動作區 */}
-      <div className="pt-1">
+      {/* 頁面底部操作列（卡片外 → 位置固定在頁面下方） */}
+      <div className="mt-4 pb-8">
         <button className={primaryBtnCx} disabled={submitting} onClick={submit}>
           {submitting ? '送出中…' : '送出申請單'}
         </button>
-      </div>
 
-      {/* 訊息區 */}
-      {err && <div className="mt-3 text-sm text-red-600">{err}</div>}
-      {okMsg && <div className="mt-3 text-sm text-green-700">{okMsg}</div>}
-    </div>
+        {/* 訊息區（靠近按鈕更醒目） */}
+        {err && <div className="mt-3 text-sm text-red-600">{err}</div>}
+        {okMsg && <div className="mt-3 text-sm text-green-700">{okMsg}</div>}
+      </div>
+    </>
   )
 }
