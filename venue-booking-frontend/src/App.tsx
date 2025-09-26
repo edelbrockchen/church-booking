@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import CalendarPage from './pages/CalendarPage'
 import RulesPage from './pages/RulesPage'
 import BookingPage from './pages/BookingPage'
-import AdminReviewPage from './pages/AdminReviewPage'
+import AdminReviewPage from '../pages/AdminReviewPage'
 
 // ✅ 新增：軟式門檻需要的工具與 Modal
 import { isAgreedLocal, setAgreedLocal, recordAgreementOnServer, fetchAgreementFromServer } from './agree'
