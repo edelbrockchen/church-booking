@@ -34,6 +34,7 @@ export default function BookingPage() {
   // 申請人與場地
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
+  const [phone, setPhone] = useState('') // ✅ 新增電話
   const [reason, setReason] = useState('')
   const [venue, setVenue] = useState<Venue>('大會堂')
 
@@ -94,6 +95,7 @@ export default function BookingPage() {
     setErr(null); setOkMsg(null)
     if (!name.trim()) return setErr('請輸入申請者姓名')
     if (!/^[^@]+@[^@]+\.[^@]+$/.test(email.trim())) return setErr('請輸入有效的 E-Mail')
+    if (!/^[\d+\-\s()]{8,}$/.test(phone.trim())) return setErr('請輸入有效的電話號碼')
     if (!reason.trim()) return setErr('請輸入申請事由')
 
     setSubmitting(true)
@@ -110,7 +112,7 @@ export default function BookingPage() {
           payloads.push({
             start: it.start.toISOString(),
             category: '其他',
-            note: `【場地】${venue}｜【事由】${reason}｜【E-Mail】${email}`,
+            note: `【場地】${venue}｜【事由】${reason}｜【E-Mail】${email}｜【電話】${phone}`,
             created_by: name,
           })
         }
@@ -121,7 +123,7 @@ export default function BookingPage() {
         payloads.push({
           start: sd.toISOString(),
           category: '其他',
-          note: `【場地】${venue}｜【事由】${reason}｜【E-Mail】${email}`,
+          note: `【場地】${venue}｜【事由】${reason}｜【E-Mail】${email}｜【電話】${phone}`,
           created_by: name,
         })
       }
@@ -142,7 +144,7 @@ export default function BookingPage() {
           if (j?.error === 'overlap') { setErr('申請時間與既有預約重疊，請調整後再送出。'); break }
         }
       }
-      if (success) setOkMsg(`已送出 ${success} 筆申請，待審核。`)
+      if (success) setOkMsg(`已送出 ${success} 筆申請，待管理者審核。`)
       else if (!err) setErr('申請未成功，請稍後再試。')
     } finally {
       setSubmitting(false)
@@ -157,7 +159,7 @@ export default function BookingPage() {
     `w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 shadow-inner
      focus:outline-none focus:ring-2 focus:ring-[${BRAND}] focus:border-[${BRAND}]`
   const primaryBtnCx =
-    `inline-flex items-center rounded-2xl bg-black px-5 py-3 text-white hover:brightness-95 disabled:opacity-60 shadow-md`
+    `block mx-auto rounded-2xl bg-black px-5 py-3 text-white hover:brightness-95 disabled:opacity-60 shadow-md` // ✅ 置中
   const confirmBtnCx =
     `inline-flex items-center rounded-xl bg-black px-4 py-2 text-white text-sm hover:brightness-95`
 
@@ -177,6 +179,12 @@ export default function BookingPage() {
         <div className="mb-5">
           <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
           <input className={inputCx} value={email} onChange={e => setEmail(e.target.value)} placeholder="name@example.com" type="email" />
+        </div>
+
+        {/* 電話號碼（新增） */}
+        <div className="mb-5">
+          <label className="block text-sm font-medium text-slate-700 mb-1">電話</label>
+          <input className={inputCx} value={phone} onChange={e => setPhone(e.target.value)} placeholder="例如：0912-345-678 或 04-1234-5678" />
         </div>
 
         {/* 申請事由 */}
@@ -200,7 +208,6 @@ export default function BookingPage() {
         <fieldset className={`mb-6 ${repeat ? 'opacity-60 pointer-events-none select-none' : ''}`}>
           <legend className="block text-sm font-medium text-slate-700 mb-2">單一日期</legend>
 
-          {/* 開始時間 + 右側「確定」鈕（像你截圖那種） */}
           <label className="block text-sm font-medium text-slate-700 mb-1">
             開始時間
             <span className="ml-2 text-xs text-slate-500">（每日最早 07:00；週一/週三最晚 18:00；其他至 21:30；週日禁用）</span>
@@ -219,7 +226,6 @@ export default function BookingPage() {
             </button>
           </div>
 
-          {/* 結束時間（唯讀） */}
           <label className="block text-sm font-medium text-slate-700 mb-1">結束時間（固定起始＋3 小時，唯讀）</label>
           <input
             type="datetime-local"
@@ -248,7 +254,7 @@ export default function BookingPage() {
 
           {repeat && (
             <div className="mt-4 space-y-4">
-              {/* 三欄輸入 + 右側確定鈕（手機換行、桌機靠右） */}
+              {/* 三欄輸入 + 右側確定鈕 */}
               <div className="flex flex-col sm:flex-row sm:items-end sm:gap-3">
                 <div className="flex-1 grid gap-4 sm:grid-cols-3">
                   <div>
@@ -270,27 +276,31 @@ export default function BookingPage() {
                 </button>
               </div>
 
-              {/* 指定星期（週日禁用） */}
+              {/* 指定星期（週日禁用 + 視覺禁點） */}
               <div>
                 <div className="block text-sm font-medium text-slate-700 mb-2">指定星期：</div>
                 <div className="flex flex-wrap gap-2">
-                  {(Object.keys(WDL) as unknown as Weekday[]).map(wd => (
-                    <label
-                      key={wd}
-                      className="inline-flex items-center gap-2 px-3 py-1.5 rounded-2xl border text-sm bg-white text-slate-700 border-slate-300"
-                    >
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4 rounded border-slate-300"
-                        checked={weekday[wd]}
-                        onChange={() => toggleWD(wd)}
-                        disabled={wd === 0} // 週日不能選
-                      />
-                      <span className={wd === 0 ? 'text-slate-400' : ''}>
-                        {WDL[wd]}{wd === 0 && <span className="ml-1 text-xs">（週日禁用）</span>}
-                      </span>
-                    </label>
-                  ))}
+                  {(Object.keys(WDL) as unknown as Weekday[]).map(wd => {
+                    const disabled = wd === 0
+                    return (
+                      <label
+                        key={wd}
+                        className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-2xl border text-sm
+                                    ${disabled ? 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed' : 'bg-white text-slate-700 border-slate-300'}`}
+                      >
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-slate-300"
+                          checked={weekday[wd]}
+                          onChange={() => toggleWD(wd)}
+                          disabled={disabled}
+                        />
+                        <span>
+                          {WDL[wd]}{disabled && <span className="ml-1 text-xs">（週日禁用）</span>}
+                        </span>
+                      </label>
+                    )
+                  })}
                 </div>
 
                 {/* 快捷鍵 */}
@@ -336,15 +346,15 @@ export default function BookingPage() {
         {confirmNote && <div className="mt-3 text-sm text-green-700">{confirmNote}</div>}
       </div>
 
-      {/* 頁面底部操作列（卡片外 → 頁面下方） */}
+      {/* 頁面底部操作列 */}
       <div className="mt-4 pb-8">
         <button className={primaryBtnCx} disabled={submitting} onClick={submit}>
           {submitting ? '送出中…' : '送出申請單'}
         </button>
 
         {/* 訊息區 */}
-        {err && <div className="mt-3 text-sm text-red-600">{err}</div>}
-        {okMsg && <div className="mt-3 text-sm text-green-700">{okMsg}</div>}
+        {err && <div className="mt-3 text-sm text-red-600 text-center">{err}</div>}
+        {okMsg && <div className="mt-3 text-sm text-green-700 text-center">{okMsg}</div>}
       </div>
     </>
   )
