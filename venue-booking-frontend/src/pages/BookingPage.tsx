@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react'
 
-// ---- 主題顏色（改這行就能換色）----
+// ---- 主題顏色（可改）----
 const BRAND = '#0F6FFF'
 
 // ---- 常數與工具 ----
@@ -58,6 +58,9 @@ export default function BookingPage() {
   const [okMsg, setOkMsg] = useState<string | null>(null)
 
   function toggleWD(i: Weekday) { setWeekday(p => ({ ...p, [i]: !p[i] })) }
+  function selectWorkdays() { setWeekday({ 0: false, 1: true, 2: true, 3: true, 4: true, 5: true, 6: false }) }
+  function selectWeekendNoSun() { setWeekday({ 0: false, 1: false, 2: false, 3: false, 4: false, 5: false, 6: true }) }
+  function clearWeekdays() { setWeekday({ 0: false, 1: false, 2: false, 3: false, 4: false, 5: false, 6: false }) }
 
   // 預覽（重複申請才顯示）
   const preview = useMemo(() => {
@@ -85,8 +88,6 @@ export default function BookingPage() {
 
   async function submit() {
     setErr(null); setOkMsg(null)
-
-    // 基本驗證
     if (!name.trim()) return setErr('請輸入申請者姓名')
     if (!/^[^@]+@[^@]+\.[^@]+$/.test(email.trim())) return setErr('請輸入有效的 E-Mail')
     if (!reason.trim()) return setErr('請輸入申請事由')
@@ -94,28 +95,22 @@ export default function BookingPage() {
 
     setSubmitting(true)
     try {
-      // 要送出的清單
       const payloads: Array<{ start: string; note: string; created_by: string; category: string }> = []
 
       if (repeat) {
         const rs = rangeStart ? new Date(rangeStart) : null
         const re = rangeEnd ? new Date(rangeEnd) : null
-        if (!rs || !re || !withinTwoWeeks(rs, re)) {
-          setSubmitting(false); return setErr('重複申請需提供有效的日期範圍（最長兩週）')
-        }
-        if (!preview.length) {
-          setSubmitting(false); return setErr('所選星期在範圍內沒有可申請的日子（或全為週日）')
-        }
+        if (!rs || !re || !withinTwoWeeks(rs, re)) { setSubmitting(false); return setErr('重複申請需提供有效的日期範圍（最長兩週）') }
+        if (!preview.length) { setSubmitting(false); return setErr('所選星期在範圍內沒有可申請的日子（或全為週日）') }
         for (const it of preview) {
           payloads.push({
             start: it.start.toISOString(),
-            category: '其他', // 與後端 AllowedCategories 對齊
+            category: '其他',
             note: `【場地】${venue}｜【事由】${reason}｜【E-Mail】${email}`,
             created_by: name,
           })
         }
       } else {
-        // 單筆
         if (startDate.getDay() === 0) { setSubmitting(false); return setErr('週日不可申請') }
         payloads.push({
           start: startDate.toISOString(),
@@ -148,15 +143,13 @@ export default function BookingPage() {
     }
   }
 
-  // 共用的輸入框類別（灰框 + 內距 + 聚焦外框以品牌色）
+  // 共用樣式
   const inputCx =
     `w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400 shadow-inner
      focus:outline-none focus:ring-2 focus:ring-[${BRAND}] focus:border-[${BRAND}]`
-
   const selectCx =
     `w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 shadow-inner
      focus:outline-none focus:ring-2 focus:ring-[${BRAND}] focus:border-[${BRAND}]`
-
   const primaryBtnCx =
     `inline-flex items-center rounded-xl bg-[${BRAND}] px-5 py-3 text-white hover:brightness-95 disabled:opacity-60`
 
@@ -237,27 +230,57 @@ export default function BookingPage() {
               </div>
             </div>
 
+            {/* ✅ 指定星期（checkbox pill，顏色不變；週日禁用） */}
             <div>
-              <div className="block text-sm font-medium text-slate-700 mb-2">選擇星期</div>
+              <div className="block text-sm font-medium text-slate-700 mb-2">指定星期：</div>
               <div className="flex flex-wrap gap-2">
                 {(Object.keys(WDL) as unknown as Weekday[]).map(wd => (
-                  <button
+                  <label
                     key={wd}
-                    type="button"
-                    onClick={() => toggleWD(wd)}
-                    aria-pressed={weekday[wd]}
-                    className={`px-3 py-1.5 rounded-xl border text-sm transition-colors
-                      ${weekday[wd]
-                        ? `text-white border-[${BRAND}] bg-[${BRAND}]`
-                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}`}
+                    className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-2xl border text-sm
+                                bg-white text-slate-700 border-slate-300`}
                   >
-                    {WDL[wd]}
-                  </button>
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-slate-300"
+                      checked={weekday[wd]}
+                      onChange={() => toggleWD(wd)}
+                      disabled={wd === 0} // 週日禁用
+                    />
+                    <span className={wd === 0 ? 'text-slate-400' : ''}>
+                      {WDL[wd]}{wd === 0 && <span className="ml-1 text-xs">（週日禁用）</span>}
+                    </span>
+                  </label>
                 ))}
               </div>
 
+              {/* 快捷鍵 */}
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={selectWorkdays}
+                  className="px-3 py-1.5 rounded-2xl border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 text-sm"
+                >
+                  一鍵選工作日（週一～週五）
+                </button>
+                <button
+                  type="button"
+                  onClick={selectWeekendNoSun}
+                  className="px-3 py-1.5 rounded-2xl border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 text-sm"
+                >
+                  一鍵選週末（排除週日）
+                </button>
+                <button
+                  type="button"
+                  onClick={clearWeekdays}
+                  className="px-3 py-1.5 rounded-2xl border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 text-sm"
+                >
+                  清空
+                </button>
+              </div>
+
               {/* 預覽清單 */}
-              <div className="mt-3 max-h-56 overflow-auto space-y-2 pr-1">
+              <div className="mt-4 max-h-56 overflow-auto space-y-2 pr-1">
                 {preview.map((it, i) => {
                   const hm = (d: Date) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
                   return (
@@ -278,7 +301,7 @@ export default function BookingPage() {
       {/* 動作區 */}
       <div className="pt-1">
         <button className={primaryBtnCx} disabled={submitting} onClick={submit}>
-          {submitting ? '送出中…' : '送出申請'}
+          {submitting ? '送出中…' : '送出申請單'}
         </button>
       </div>
 
