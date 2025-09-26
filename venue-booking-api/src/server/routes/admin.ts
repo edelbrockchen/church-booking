@@ -1,10 +1,13 @@
+// venue-booking-api/src/server/routes/admin.ts
 import { Router } from 'express'
 import { z } from 'zod'
-import * as bcrypt from 'bcryptjs' // 若 TS 提示型別，安裝 @types/bcryptjs
+import * as bcrypt from 'bcryptjs'
+import { makePool } from '../db'
 
 export const adminRouter = Router()
+const pool = makePool()
 
-// 從環境變數載入「使用者 -> bcrypt 雜湊密碼」的對照
+// --- 輔助：載入 ADMIN_USERS_JSON（username -> bcrypt hash） ---
 function loadAdminUsers(): Record<string, string> {
   const raw = process.env.ADMIN_USERS_JSON
   if (!raw) return {}
@@ -17,18 +20,26 @@ function loadAdminUsers(): Record<string, string> {
   return {}
 }
 const adminUsers = loadAdminUsers()
-console.log('[admin] loaded admins:', Object.keys(adminUsers))
 
-// （可選）相容舊版的共用明文密碼；若不想保留可把 ADMIN_PASSWORD 從 env 拔除
+// （可選）舊的共用明文密碼，若不需要可刪除 ADMIN_PASSWORD 這個 env
 const fallbackPassword = process.env.ADMIN_PASSWORD ?? ''
 
-// 目前登入者
+// --- Middleware：只允許 admin ---
+function ensureAdmin(req: any, res: any, next: any) {
+  const user = req.session?.user
+  if (!user || user.role !== 'admin') {
+    return res.status(401).json({ error: 'unauthorized' })
+  }
+  next()
+}
+
+// --- 目前登入者 ---
 adminRouter.get('/me', (req, res) => {
   const user = (req as any).session?.user ?? null
   res.json({ user })
 })
 
-// 登入（使用 bcrypt.compare）
+// --- 登入（bcrypt.compare 驗證） ---
 adminRouter.post('/login', async (req, res) => {
   const schema = z.object({
     username: z.string().min(1),
@@ -38,12 +49,10 @@ adminRouter.post('/login', async (req, res) => {
   if (!p.success) return res.status(400).json({ error: 'invalid_payload' })
 
   const { username, password } = p.data
-
   const hash = adminUsers[username]
   let ok = false
 
   if (typeof hash === 'string' && hash.length > 0) {
-    // ✅ 有設定該帳號的 bcrypt 雜湊 → 使用 bcrypt 驗證
     try {
       ok = await bcrypt.compare(password, hash)
     } catch (e) {
@@ -51,7 +60,6 @@ adminRouter.post('/login', async (req, res) => {
       return res.status(500).json({ error: 'server_error' })
     }
   } else if (fallbackPassword) {
-    // 相容：若該帳號未在 JSON 內，且仍有舊的共用密碼，允許用共用密碼登入
     ok = password === fallbackPassword
   }
 
@@ -65,8 +73,90 @@ adminRouter.post('/login', async (req, res) => {
   res.json({ ok: true })
 })
 
-// 登出
+// --- 登出 ---
 adminRouter.post('/logout', (req, res) => {
   (req as any).session?.destroy?.(() => {})
   res.json({ ok: true })
+})
+
+// --- 近 60 天申請（可選 status 過濾） ---
+adminRouter.get('/review', ensureAdmin, async (_req, res) => {
+  if (!pool) return res.status(503).json({ error: 'db_unavailable' })
+  const qStatus = (_req.query.status as string | undefined)?.toLowerCase()
+  const allowed = new Set(['pending', 'approved', 'rejected'])
+  const hasStatus = qStatus && allowed.has(qStatus)
+
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT id, start_ts, end_ts, created_at, created_by, status,
+             reviewed_at, reviewed_by, rejection_reason, category, note
+      FROM bookings
+      WHERE created_at >= now() - interval '60 days'
+        ${hasStatus ? `AND status = $1` : ``}
+      ORDER BY created_at DESC
+      `,
+      hasStatus ? [qStatus] : []
+    )
+    res.json({ items: rows })
+  } catch (e) {
+    console.error('[admin][review] query failed:', e)
+    res.status(500).json({ error: 'server_error' })
+  }
+})
+
+// --- 核准 ---
+adminRouter.post('/bookings/:id/approve', ensureAdmin, async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'db_unavailable' })
+  const id = req.params.id
+  const reviewer = (req as any).session.user?.name ?? 'admin'
+
+  try {
+    const r = await pool.query(
+      `
+      UPDATE bookings
+      SET status = 'approved',
+          reviewed_at = now(),
+          reviewed_by = $2,
+          rejection_reason = NULL
+      WHERE id = $1
+      `,
+      [id, reviewer]
+    )
+    if (r.rowCount === 0) return res.status(404).json({ error: 'not_found' })
+    res.json({ ok: true })
+  } catch (e) {
+    console.error('[admin][approve] update failed:', e)
+    res.status(500).json({ error: 'server_error' })
+  }
+})
+
+// --- 退件（可附理由） ---
+adminRouter.post('/bookings/:id/reject', ensureAdmin, async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'db_unavailable' })
+  const id = req.params.id
+  const reviewer = (req as any).session.user?.name ?? 'admin'
+
+  const schema = z.object({ reason: z.string().trim().max(200).optional() })
+  const p = schema.safeParse(req.body)
+  if (!p.success) return res.status(400).json({ error: 'invalid_payload' })
+
+  try {
+    const r = await pool.query(
+      `
+      UPDATE bookings
+      SET status = 'rejected',
+          reviewed_at = now(),
+          reviewed_by = $2,
+          rejection_reason = $3
+      WHERE id = $1
+      `,
+      [id, reviewer, p.data.reason ?? null]
+    )
+    if (r.rowCount === 0) return res.status(404).json({ error: 'not_found' })
+    res.json({ ok: true })
+  } catch (e) {
+    console.error('[admin][reject] update failed:', e)
+    res.status(500).json({ error: 'server_error' })
+  }
 })
