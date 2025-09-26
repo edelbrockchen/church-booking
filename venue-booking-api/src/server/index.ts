@@ -19,8 +19,8 @@ import { makePool } from './db'
 
 const app = express()
 
-/* ------------------------- 安全/中介層順序很重要 ------------------------- */
-// 1) 反向代理（Render 必要）
+/* ------------------------- 安全/中介層順序（很重要） ------------------------- */
+// 1) 必開：信任反向代理（Render / 任何 Proxy 後面）
 app.set('trust proxy', 1)
 
 // 2) 安全標頭
@@ -35,15 +35,16 @@ const ALLOWED_ORIGINS = (process.env.CORS_ORIGIN ?? 'https://venue-booking-front
 app.use(
   cors({
     origin: (origin, cb) => {
-      // 同源（例如 curl/Postman）或在清單內 → 放行
-      if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true)
+      // 非瀏覽器工具（curl/Postman）沒有 origin → 放行
+      if (!origin) return cb(null, true)
+      if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true)
       return cb(new Error('Not allowed by CORS'))
     },
     credentials: true,
   })
 )
 
-// 4) JSON 解析與 Cookie
+// 4) JSON 與 Cookie 解析
 app.use(express.json())
 app.use(cookieParser())
 
@@ -53,7 +54,7 @@ let store: any = undefined
 
 if (process.env.REDIS_URL) {
   const redis = new Redis(process.env.REDIS_URL)
-  store = new RedisStore({ client: redis as any })
+  store = new RedisStore({ client: redis as any }) // connect-redis v7
   console.log('[api] session store: Redis')
 } else {
   console.log('[api] session store: MemoryStore (single-instance only)')
@@ -74,7 +75,7 @@ app.use(
   })
 )
 
-/* ---------------------------- 其餘共用中介層 ---------------------------- */
+/* ---------------------------- 其他共用中介層 ---------------------------- */
 // 全站節流
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -94,7 +95,7 @@ const loginLimiter = rateLimit({
 })
 app.use('/api/admin/login', loginLimiter)
 
-// CSRF：提供前端取得 token（如需）
+// CSRF：前端如需取得 token 可用此端點
 const csrfProtection = csrf({ cookie: true }) as unknown as RequestHandler
 app.get('/api/csrf', csrfProtection, (req, res) => {
   const token = (req as any).csrfToken?.() ?? ''
@@ -104,11 +105,21 @@ app.get('/api/csrf', csrfProtection, (req, res) => {
 // 健康檢查
 app.get('/api/health', (_req, res) => res.json({ ok: true }))
 
+// 🔎 除錯用：觀察目前 session（上線穩定後可移除）
+app.get('/api/debug/session', (req, res) => {
+  res.json({
+    origin: req.headers.origin,
+    cookieNames: Object.keys(req.cookies || {}),
+    sessionUser: (req as any).session?.user ?? null,
+    hasSession: Boolean((req as any).session),
+  })
+})
+
 /* --------------------------------- 路由 --------------------------------- */
 // ✅ 建立 DB Pool（terms / bookings 共用）
 const pool = makePool()
 
-// ✅ 掛載 terms API（與前端「軟式門檻」搭配）
+// ✅ terms API（與前端軟式門檻搭配）
 if (pool) {
   app.use('/api/terms', createTermsRouter(pool))
   console.log('[api] /api/terms mounted')
