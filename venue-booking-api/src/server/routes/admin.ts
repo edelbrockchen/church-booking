@@ -1,9 +1,10 @@
 import { Router } from 'express'
 import { z } from 'zod'
+import * as bcrypt from 'bcryptjs' // 若 TS 提示型別，安裝 @types/bcryptjs
 
 export const adminRouter = Router()
 
-// 讀環境變數：支援 per-user JSON；沒有就回退到單一 ADMIN_PASSWORD（相容舊版）
+// 從環境變數載入「使用者 -> bcrypt 雜湊密碼」的對照
 function loadAdminUsers(): Record<string, string> {
   const raw = process.env.ADMIN_USERS_JSON
   if (!raw) return {}
@@ -15,19 +16,10 @@ function loadAdminUsers(): Record<string, string> {
   }
   return {}
 }
-
 const adminUsers = loadAdminUsers()
-const fallbackPassword = process.env.ADMIN_PASSWORD ?? ''
 
-function checkLogin(username: string, password: string): boolean {
-  const perUser = adminUsers[username]
-  if (typeof perUser === 'string') {
-    return password === perUser
-  }
-  // 相容：不在清單中的帳號，若有設定 ADMIN_PASSWORD，仍可用舊的共用密碼
-  if (fallbackPassword) return password === fallbackPassword
-  return false
-}
+// （可選）相容舊版的共用明文密碼；若不想保留可把 ADMIN_PASSWORD 從 env 拔除
+const fallbackPassword = process.env.ADMIN_PASSWORD ?? ''
 
 // 目前登入者
 adminRouter.get('/me', (req, res) => {
@@ -35,8 +27,8 @@ adminRouter.get('/me', (req, res) => {
   res.json({ user })
 })
 
-// 登入：帳密來自 JSON（或回退共用密碼）
-adminRouter.post('/login', (req, res) => {
+// 登入（使用 bcrypt.compare）
+adminRouter.post('/login', async (req, res) => {
   const schema = z.object({
     username: z.string().min(1),
     password: z.string().min(1),
@@ -45,7 +37,23 @@ adminRouter.post('/login', (req, res) => {
   if (!p.success) return res.status(400).json({ error: 'invalid_payload' })
 
   const { username, password } = p.data
-  const ok = checkLogin(username, password)
+
+  const hash = adminUsers[username]
+  let ok = false
+
+  if (typeof hash === 'string' && hash.length > 0) {
+    // ✅ 有設定該帳號的 bcrypt 雜湊 → 使用 bcrypt 驗證
+    try {
+      ok = await bcrypt.compare(password, hash)
+    } catch (e) {
+      console.error('[admin][login] bcrypt error:', e)
+      return res.status(500).json({ error: 'server_error' })
+    }
+  } else if (fallbackPassword) {
+    // 相容：若該帳號未在 JSON 內，且仍有舊的共用密碼，允許用共用密碼登入
+    ok = password === fallbackPassword
+  }
+
   if (!ok) return res.status(401).json({ error: 'invalid_credentials' })
 
   ;(req as any).session.user = {

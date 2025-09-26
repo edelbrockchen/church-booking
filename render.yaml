@@ -14,17 +14,16 @@ services:
         value: https://venue-booking-frontend-a3ib.onrender.com
       - key: SESSION_SECRET
         generateValue: true
-      # 若仍想保留舊的共用密碼可留著；若不需要可刪除本變數
-      - key: ADMIN_PASSWORD
-        generateValue: true
+      # 如果你不需要舊的共用密碼，可以直接刪除這個變數，保留更安全
+      # - key: ADMIN_PASSWORD
+      #   generateValue: true
 
-      # ✅ 新增：每位管理者的帳密（JSON）
+      # ✅ 每位管理者的帳密（JSON）
       - key: ADMIN_USERS_JSON
         value: |
           {
             "edelbrock": "B123456789o!!",
-            "ntchurch": "ntchurch2025!!",
-            "ntchurh": "ntchurch2025!!"
+            "ntchurch": "ntchurch2025!!"
           }
 
       # 建議加上 REDIS_URL（正式環境）
