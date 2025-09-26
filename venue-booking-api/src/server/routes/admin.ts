@@ -1,99 +1,63 @@
-// venue-booking-api/src/server/routes/admin.ts
-import { Router, type Request } from 'express'
+import { Router } from 'express'
 import { z } from 'zod'
-import { makePool } from '../db'
 
 export const adminRouter = Router()
-const pool = makePool()
 
-function isAdmin(req: Request): boolean {
-  return (req as any).session?.user?.role === 'admin'
-}
-function requireAdmin(req: Request, res: any, next: any) {
-  if (!isAdmin(req)) return res.status(403).json({ error: 'forbidden' })
-  next()
+// 讀環境變數：支援 per-user JSON；沒有就回退到單一 ADMIN_PASSWORD（相容舊版）
+function loadAdminUsers(): Record<string, string> {
+  const raw = process.env.ADMIN_USERS_JSON
+  if (!raw) return {}
+  try {
+    const obj = JSON.parse(raw)
+    if (obj && typeof obj === 'object') return obj as Record<string, string>
+  } catch (e) {
+    console.error('[admin] ADMIN_USERS_JSON parse error:', e)
+  }
+  return {}
 }
 
-const rejectSchema = z.object({
-  reason: z.string().trim().max(200).optional(),
+const adminUsers = loadAdminUsers()
+const fallbackPassword = process.env.ADMIN_PASSWORD ?? ''
+
+function checkLogin(username: string, password: string): boolean {
+  const perUser = adminUsers[username]
+  if (typeof perUser === 'string') {
+    return password === perUser
+  }
+  // 相容：不在清單中的帳號，若有設定 ADMIN_PASSWORD，仍可用舊的共用密碼
+  if (fallbackPassword) return password === fallbackPassword
+  return false
+}
+
+// 目前登入者
+adminRouter.get('/me', (req, res) => {
+  const user = (req as any).session?.user ?? null
+  res.json({ user })
 })
 
-adminRouter.post('/bookings/:id/approve', requireAdmin, async (req, res) => {
-  if (!pool) return res.status(503).json({ error: 'db_unavailable' })
-  const id = req.params.id
-  const reviewer = (req as any).session?.user?.id ?? null
+// 登入：帳密來自 JSON（或回退共用密碼）
+adminRouter.post('/login', (req, res) => {
+  const schema = z.object({
+    username: z.string().min(1),
+    password: z.string().min(1),
+  })
+  const p = schema.safeParse(req.body)
+  if (!p.success) return res.status(400).json({ error: 'invalid_payload' })
 
-  const c = await pool.connect()
-  try {
-    await c.query('BEGIN')
+  const { username, password } = p.data
+  const ok = checkLogin(username, password)
+  if (!ok) return res.status(401).json({ error: 'invalid_credentials' })
 
-    const f = await c.query(`SELECT id, status FROM bookings WHERE id=$1 LIMIT 1`, [id])
-    if (f.rowCount === 0) {
-      await c.query('ROLLBACK')
-      return res.status(404).json({ error: 'not_found' })
-    }
-    const b = f.rows[0]
-    if (!['pending'].includes(b.status)) {
-      await c.query('ROLLBACK')
-      return res.status(409).json({ error: 'invalid_status' })
-    }
-
-    await c.query(
-      `UPDATE bookings
-       SET status='approved', reviewed_at=now(), reviewed_by=$2, rejection_reason=NULL
-       WHERE id=$1`,
-      [id, reviewer]
-    )
-
-    await c.query('COMMIT')
-    return res.json({ ok: true })
-  } catch (e) {
-    await c.query('ROLLBACK')
-    console.error('[admin] approve failed', e)
-    return res.status(500).json({ error: 'server_error' })
-  } finally {
-    c.release()
+  ;(req as any).session.user = {
+    id: `admin:${username}`,
+    role: 'admin',
+    name: username,
   }
+  res.json({ ok: true })
 })
 
-adminRouter.post('/bookings/:id/reject', requireAdmin, async (req, res) => {
-  if (!pool) return res.status(503).json({ error: 'db_unavailable' })
-  const id = req.params.id
-  const reviewer = (req as any).session?.user?.id ?? null
-
-  const p = rejectSchema.safeParse(req.body)
-  if (!p.success) return res.status(400).json({ error: 'invalid_payload', details: p.error.issues })
-  const reason = p.data.reason ?? null
-
-  const c = await pool.connect()
-  try {
-    await c.query('BEGIN')
-
-    const f = await c.query(`SELECT id, status FROM bookings WHERE id=$1 LIMIT 1`, [id])
-    if (f.rowCount === 0) {
-      await c.query('ROLLBACK')
-      return res.status(404).json({ error: 'not_found' })
-    }
-    const b = f.rows[0]
-    if (!['pending', 'approved'].includes(b.status)) {
-      await c.query('ROLLBACK')
-      return res.status(409).json({ error: 'invalid_status' })
-    }
-
-    await c.query(
-      `UPDATE bookings
-       SET status='rejected', reviewed_at=now(), reviewed_by=$2, rejection_reason=$3
-       WHERE id=$1`,
-      [id, reviewer, reason]
-    )
-
-    await c.query('COMMIT')
-    return res.json({ ok: true })
-  } catch (e) {
-    await c.query('ROLLBACK')
-    console.error('[admin] reject failed', e)
-    return res.status(500).json({ error: 'server_error' })
-  } finally {
-    c.release()
-  }
+// 登出
+adminRouter.post('/logout', (req, res) => {
+  (req as any).session?.destroy?.(() => {})
+  res.json({ ok: true })
 })
