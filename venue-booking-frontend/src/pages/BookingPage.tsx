@@ -48,7 +48,10 @@ export default function BookingPage() {
   const [repeat, setRepeat] = useState(false)
   const [rangeStart, setRangeStart] = useState<string>('') // date
   const [rangeEnd, setRangeEnd] = useState<string>('')
-  const [weekday, setWeekday] = useState<Record<Weekday, boolean>>({ 0: false, 1: true, 2: true, 3: true, 4: true, 5: false, 6: false })
+  // ✅ 預設全部未選
+  const [weekday, setWeekday] = useState<Record<Weekday, boolean>>({
+    0: false, 1: false, 2: false, 3: false, 4: false, 5: false, 6: false
+  })
 
   const [submitting, setSubmitting] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -211,7 +214,13 @@ export default function BookingPage() {
       {/* 重複申請 */}
       <div className="rounded-2xl border border-slate-200 bg-white/70 p-4 mb-6">
         <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700">
-          <input type="checkbox" className="h-4 w-4 rounded border-slate-300 text-white focus:ring-2" style={{ accentColor: BRAND }} checked={repeat} onChange={e => setRepeat(e.target.checked)} />
+          <input
+            type="checkbox"
+            className="h-4 w-4 rounded border-slate-300 text-white focus:ring-2"
+            style={{ accentColor: BRAND }}
+            checked={repeat}
+            onChange={e => setRepeat(e.target.checked)}
+          />
           重複申請（在日期範圍內的指定星期，最長兩週）
         </label>
 
@@ -236,6 +245,7 @@ export default function BookingPage() {
                     key={wd}
                     type="button"
                     onClick={() => toggleWD(wd)}
+                    aria-pressed={weekday[wd]}
                     className={`px-3 py-1.5 rounded-xl border text-sm transition-colors
                       ${weekday[wd]
                         ? `text-white border-[${BRAND}] bg-[${BRAND}]`
