@@ -5,7 +5,11 @@ import { makePool } from '../db'
 import { randomUUID } from 'node:crypto'
 
 export const bookingsRouter = Router()
+export default bookingsRouter
+
 const pool = makePool()
+
+/* --------------------------- 共用設定 / 型別 --------------------------- */
 
 // 可接受的分類（也可放寬為任意字串）
 const AllowedCategories = ['教會聚會', '婚禮', '研習', '其他'] as const
@@ -39,6 +43,32 @@ function isAdmin(req: Request): boolean {
   return (req as any).session?.user?.role === 'admin'
 }
 
+/* --------------------------- Demo 資料（可開關） --------------------------- */
+
+const DEMO_BOOKINGS = (process.env.DEMO_BOOKINGS ?? 'true').toLowerCase() === 'true'
+const DEMO_ITEMS = [
+  {
+    id: 'demo-1',
+    // 2025-09-28 10:00–13:00（台北時間）
+    start_ts: '2025-09-28T10:00:00+08:00',
+    end_ts:   '2025-09-28T13:00:00+08:00',
+    created_by: '系統示例',
+    category: '教會聚會',
+    note: '示例事件 A',
+  },
+  {
+    id: 'demo-2',
+    // 2025-09-30 19:00–22:00（台北時間）
+    start_ts: '2025-09-30T19:00:00+08:00',
+    end_ts:   '2025-09-30T22:00:00+08:00',
+    created_by: 'Alice',
+    category: '研習',
+    note: '示例事件 B',
+  },
+]
+
+/* --------------------------- 建立預約 --------------------------- */
+
 bookingsRouter.post('/', async (req, res) => {
   const p = createSchema.safeParse(req.body)
   if (!p.success) return res.status(400).json({ error: 'invalid_payload', details: p.error.issues })
@@ -58,7 +88,7 @@ bookingsRouter.post('/', async (req, res) => {
   const note = p.data.note ?? undefined
   const created_by = p.data.created_by ?? undefined
 
-  // 無 DB 的 demo 回覆（保留你的原行為）
+  // 無 DB 的 demo 回覆
   if (!pool) {
     return res.status(201).json({
       id: 'demo-' + Math.random().toString(36).slice(2),
@@ -131,6 +161,8 @@ bookingsRouter.post('/', async (req, res) => {
   }
 })
 
+/* --------------------------- 列表（全部） --------------------------- */
+
 bookingsRouter.get('/', async (_req, res) => {
   if (!pool) return res.json({ items: [] })
   const { rows } = await pool.query(
@@ -139,24 +171,37 @@ bookingsRouter.get('/', async (_req, res) => {
            reviewed_at, reviewed_by, rejection_reason, category, note
     FROM bookings
     ORDER BY start_ts ASC
-  `
+    `
   )
   res.json({ items: rows })
 })
 
+/* --------------------------- 列表（已核准） --------------------------- */
+
 bookingsRouter.get('/approved', async (_req, res) => {
-  if (!pool) return res.json({ items: [] })
+  if (!pool) {
+    // 沒有 DB：若開啟 demo，就給示例；否則空陣列
+    return res.json({ items: DEMO_BOOKINGS ? DEMO_ITEMS : [] })
+  }
+
   const { rows } = await pool.query(
     `
     SELECT id, start_ts, end_ts, created_by, category, note
     FROM bookings
     WHERE status = 'approved'
     ORDER BY start_ts ASC
-  `
+    `
   )
+
+  if (rows.length === 0 && DEMO_BOOKINGS) {
+    // 有 DB 但目前沒有已核准，且開啟 demo → 回示例，前端先能看到畫面
+    return res.json({ items: DEMO_ITEMS })
+  }
+
   res.json({ items: rows })
 })
 
+/* --------------------------- 取消預約 --------------------------- */
 /**
  * ✅ 取消預約：本人或管理員可取消
  * POST /api/bookings/:id/cancel
@@ -183,7 +228,7 @@ bookingsRouter.post('/:id/cancel', async (req, res) => {
     }
     const b = f.rows[0]
 
-    // 僅允許 pending / approved 轉 cancelled（若你還有其他狀態可再擴充）
+    // 僅允許 pending / approved 轉 cancelled
     if (!['pending', 'approved'].includes(b.status)) {
       await c.query('ROLLBACK')
       return res.status(409).json({ error: 'invalid_status' })
@@ -200,7 +245,7 @@ bookingsRouter.post('/:id/cancel', async (req, res) => {
       `UPDATE bookings
        SET status='cancelled', reviewed_at=now(), reviewed_by=$2
        WHERE id=$1`,
-      [id, admin ? userId : b.created_by] // 若本人取消，reviewed_by 可寫成本人或保留 null
+      [id, admin ? userId : b.created_by]
     )
 
     await c.query('COMMIT')
