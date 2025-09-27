@@ -29,7 +29,6 @@ const fallbackPassword = process.env.ADMIN_PASSWORD ?? ''
 function ensureAdmin(req: Request, res: Response, next: NextFunction) {
   const user = (req as any).session?.user
   if (!user || user.role !== 'admin') {
-    // 協助定位「未授權」
     console.warn('[admin][ensureAdmin] unauthorized', {
       origin: req.headers.origin,
       hasSession: Boolean((req as any).session),
@@ -77,7 +76,7 @@ adminRouter.post('/login', async (req, res) => {
   if (!ok) return res.status(401).json({ error: 'invalid_credentials' })
 
   // ✅ 關鍵：重生 session（防固定攻擊）→ 設 user → 保存後回覆
-  (req as any).session.regenerate((regenErr: any) => {
+  ;(req as any).session.regenerate((regenErr: any) => {
     if (regenErr) {
       console.error('[admin][login] regenerate error:', regenErr)
       return res.status(500).json({ error: 'server_error' })
