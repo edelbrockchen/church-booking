@@ -2,8 +2,6 @@
 import 'dotenv/config'
 import express, { type RequestHandler } from 'express'
 import session from 'express-session'
-import Redis from 'ioredis'
-import RedisStore from 'connect-redis'
 import pg from 'pg'
 import connectPgSimple from 'connect-pg-simple'
 import cors from 'cors'
@@ -47,24 +45,20 @@ app.use(
 app.use(express.json())
 app.use(cookieParser())
 
-/* ----------------------------- Session ----------------------------- */
+/* ----------------------------- Session（Postgres） ----------------------------- */
 const sessionSecret = process.env.SESSION_SECRET || 'please-change-me'
-let store: session.Store | undefined
 
-if (process.env.REDIS_URL) {
-  // 優先 Redis
-  const redis = new Redis(process.env.REDIS_URL)
-  store = new RedisStore({ client: redis as any })
-  console.log('[api] session store: Redis')
-} else if (process.env.DATABASE_URL) {
-  // 其次 Postgres
+let store: session.Store | undefined
+if (process.env.DATABASE_URL) {
   const PgStore = connectPgSimple(session)
   const pgPool = new pg.Pool({ connectionString: process.env.DATABASE_URL })
-  store = new PgStore({ pool: pgPool, tableName: 'session' })
+  store = new PgStore({
+    pool: pgPool,
+    tableName: 'session', // 你已在 Neon 建好此表
+  })
   console.log('[api] session store: Postgres')
 } else {
-  // 最後 MemoryStore
-  console.warn('[api] session store: MemoryStore (not for production)')
+  console.warn('[api] session store: MemoryStore (DATABASE_URL 未設定；僅適合開發)')
 }
 
 app.use(
@@ -75,8 +69,8 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      sameSite: 'none', // 跨網域
-      secure: true,     // Render/HTTPS 必須
+      sameSite: 'none', // 跨網域（前端/後端不同網域）
+      secure: true,     // 必須 HTTPS（Render 會是 HTTPS）
       maxAge: 1000 * 60 * 60 * 2, // 2 小時
     },
   })
@@ -110,7 +104,7 @@ app.get('/api/csrf', csrfProtection, (req, res) => {
 // 健康檢查
 app.get('/api/health', (_req, res) => res.json({ ok: true }))
 
-// Debug Session
+// Debug Session（除錯用；穩定後可移除）
 app.get('/api/debug/session', (req, res) => {
   res.json({
     origin: req.headers.origin,
