@@ -1,5 +1,5 @@
 // src/web/components/TermsGateModal.tsx
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 type Props = {
   open: boolean
@@ -9,13 +9,30 @@ type Props = {
 
 export default function TermsGateModal({ open, onClose, onAgreed }: Props) {
   const [submitting, setSubmitting] = useState(false)
+  const agreeBtnRef = useRef<HTMLButtonElement | null>(null)
+
+  // 不開就不渲染（避免背景可聚焦）
   if (!open) return null
+
+  // 初次開啟把焦點放到「同意」按鈕
+  useEffect(() => {
+    agreeBtnRef.current?.focus()
+  }, [])
+
+  // Esc 關閉
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
 
   async function recordAgreementOnServer() {
     try {
       await fetch('/api/terms/accept', {
         method: 'POST',
-        credentials: 'include', // 一定要帶，讓 session 生效
+        credentials: 'include', // 必須帶 cookie
       })
     } catch (e) {
       console.error('[TermsGate] recordAgreementOnServer failed', e)
@@ -23,14 +40,19 @@ export default function TermsGateModal({ open, onClose, onAgreed }: Props) {
   }
 
   function setAgreedLocal() {
-    localStorage.setItem('termsAccepted', 'true')
+    try {
+      localStorage.setItem('termsAccepted', 'true')
+    } catch {
+      /* ignore */
+    }
   }
 
   async function agree() {
+    if (submitting) return
     setSubmitting(true)
     try {
       setAgreedLocal()
-      await recordAgreementOnServer() // 容錯：即使失敗也放行
+      await recordAgreementOnServer() // 容錯：失敗也放行
     } finally {
       setSubmitting(false)
       onAgreed()
@@ -41,16 +63,20 @@ export default function TermsGateModal({ open, onClose, onAgreed }: Props) {
     <div
       role="dialog"
       aria-modal="true"
+      aria-labelledby="termsgate-title"
+      aria-describedby="termsgate-desc"
       className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/50 p-4"
-      onClick={onClose}
+      onClick={onClose} // 點 backdrop 關閉
     >
       <div
         className="w-full max-w-2xl rounded-xl bg-white shadow-xl ring-1 ring-black/5"
-        onClick={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()} // 阻止冒泡，不要點到內層就關掉
       >
         <div className="px-6 pt-5 pb-4">
-          <h2 className="text-lg font-semibold">開始前，請先同意借用規範</h2>
-          <ol className="list-decimal pl-6 mt-3 space-y-1 text-sm text-gray-700">
+          <h2 id="termsgate-title" className="text-lg font-semibold">
+            開始前，請先同意借用規範
+          </h2>
+          <ol id="termsgate-desc" className="list-decimal pl-6 mt-3 space-y-1 text-sm text-gray-700">
             <li>週日不可預約。</li>
             <li>每次固定 3 小時，超時不受理。</li>
             <li>週一/週三最晚離場 18:00，其餘日最晚 21:30。</li>
@@ -58,7 +84,12 @@ export default function TermsGateModal({ open, onClose, onAgreed }: Props) {
             <li>違反規範將影響後續借用資格。</li>
           </ol>
           <div className="mt-3 text-sm">
-            <a className="text-blue-600 hover:underline" href="/terms" target="_blank" rel="noreferrer">
+            <a
+              className="text-blue-600 hover:underline"
+              href="/terms"
+              target="_blank"
+              rel="noreferrer"
+            >
               查看完整借用規範（新分頁）
             </a>
           </div>
@@ -66,13 +97,16 @@ export default function TermsGateModal({ open, onClose, onAgreed }: Props) {
 
         <div className="px-6 pb-5 flex justify-end gap-3">
           <button
-            className="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-900 hover:bg-gray-50"
+            type="button"
+            className="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-900 hover:bg-gray-50 disabled:opacity-60"
             onClick={onClose}
             disabled={submitting}
           >
             取消
           </button>
           <button
+            type="button"
+            ref={agreeBtnRef}
             className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
             onClick={agree}
             disabled={submitting}

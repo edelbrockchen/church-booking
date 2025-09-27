@@ -39,12 +39,7 @@ const corsOptions: cors.CorsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: [
-    'Content-Type',
-    'X-CSRF-Token',
-    'X-Requested-With',
-    'Authorization',
-  ],
+  allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Requested-With', 'Authorization'],
   exposedHeaders: ['X-CSRF-Token'],
 }
 
@@ -64,10 +59,7 @@ let store: session.Store | undefined
 if (process.env.DATABASE_URL) {
   const PgStore = connectPgSimple(session)
   const pgPool = new pg.Pool({ connectionString: process.env.DATABASE_URL })
-  store = new PgStore({
-    pool: pgPool,
-    tableName: 'session',
-  })
+  store = new PgStore({ pool: pgPool, tableName: 'session' })
   console.log('[api] session store: Postgres')
 } else {
   console.warn('[api] session store: MemoryStore (DATABASE_URL 未設定；僅適合開發)')
@@ -89,6 +81,20 @@ app.use(
     },
   })
 )
+
+/* ---------------------- ★★ 保底：給未登入者一個 guest 身分 ★★ ---------------------- */
+// 一定要放在 session 之後、所有路由之前
+app.use((req, _res, next) => {
+  const s: any = (req as any).session
+  if (!s.user) {
+    s.user = {
+      id: `guest:${req.sessionID}`, // 以 sessionID 標識這個訪客
+      role: 'guest',
+    }
+    // console.log('[ensureUser] created guest userId =', s.user.id)
+  }
+  next()
+})
 
 /* -------------------------- 共用中介層 -------------------------- */
 const limiter = rateLimit({
@@ -112,7 +118,7 @@ app.use('/api/admin/login', loginLimiter)
 const csrfProtection = csrf({
   cookie: {
     key: 'vbx-csrf',
-    httpOnly: true,        // 前端不可讀，搭配 header 送回
+    httpOnly: true, // 前端不可讀，改由 /api/csrf 取 token
     sameSite: 'none',
     secure: true,
   },
@@ -139,9 +145,7 @@ app.get('/api/debug/session', (req, res) => {
 
 // Debug：檢視原始 cookie 標頭（問題排查用）
 app.get('/api/debug/cookies', (req, res) => {
-  res.json({
-    cookieHeader: req.headers.cookie ?? null,
-  })
+  res.json({ cookieHeader: req.headers.cookie ?? null })
 })
 
 /* ------------------------------- 路由 ------------------------------- */
