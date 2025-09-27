@@ -70,6 +70,9 @@ const DEMO_ITEMS = [
 /* --------------------------- 建立預約 --------------------------- */
 
 bookingsRouter.post('/', async (req, res) => {
+  // 🔎 debug：觀察 session 使用者
+  console.log('[bookings][POST /] userId =', getUserId(req))
+
   const p = createSchema.safeParse(req.body)
   if (!p.success) return res.status(400).json({ error: 'invalid_payload', details: p.error.issues })
 
@@ -83,6 +86,11 @@ bookingsRouter.post('/', async (req, res) => {
   const cap = new Date(start); cap.setHours(hour, minute, 0, 0)
   const end = targetEnd.getTime() > cap.getTime() ? cap : targetEnd
   const truncated = end.getTime() < targetEnd.getTime()
+
+  if (end.getTime() <= start.getTime()) {
+    // 若被截短到不合理（例如太晚起始），直接拒絕
+    return res.status(409).json({ error: 'too_late' })
+  }
 
   const category = (p.data.category as (typeof AllowedCategories)[number] | undefined) ?? undefined
   const note = p.data.note ?? undefined
@@ -114,14 +122,15 @@ bookingsRouter.post('/', async (req, res) => {
 
     await c.query('BEGIN')
 
-    // 檢查重疊（半開區間 [) 避免尾端貼齊判定為重疊）
+    // 檢查重疊 —— 與 DB constraint 一致，皆採 '[]'
+    const rangeMode = '[]'
     const overlap = await c.query(
       `
       SELECT 1 FROM bookings
-      WHERE tstzrange(start_ts, end_ts, '[)') && tstzrange($1::timestamptz, $2::timestamptz, '[)')
+      WHERE tstzrange(start_ts, end_ts, $3) && tstzrange($1::timestamptz, $2::timestamptz, $3)
       LIMIT 1
       `,
-      [start.toISOString(), end.toISOString()]
+      [start.toISOString(), end.toISOString(), rangeMode]
     )
     if (overlap.rows.length > 0) {
       await c.query('ROLLBACK')
@@ -129,6 +138,8 @@ bookingsRouter.post('/', async (req, res) => {
     }
 
     const id = randomUUID()
+    console.log('[bookings] inserting', { id, start: start.toISOString(), end: end.toISOString(), userId, category, note })
+
     await c.query(
       `
       INSERT INTO bookings (id, start_ts, end_ts, created_by, status, category, note)
@@ -151,9 +162,12 @@ bookingsRouter.post('/', async (req, res) => {
     })
   } catch (e: any) {
     await c.query('ROLLBACK')
-    if (e?.constraint === 'no_overlap') {
+
+    // 與 SQL 約束名稱一致
+    if (e?.constraint === 'bookings_no_overlap') {
       return res.status(409).json({ error: 'overlap' })
     }
+
     console.error('[bookings] insert failed', e)
     return res.status(500).json({ error: 'server_error' })
   } finally {
@@ -226,7 +240,7 @@ bookingsRouter.post('/:id/cancel', async (req, res) => {
       await c.query('ROLLBACK')
       return res.status(404).json({ error: 'not_found' })
     }
-    const b = f.rows[0]
+    const b = f.rows[0] as { id: string; created_by: string | null; status: string }
 
     // 僅允許 pending / approved 轉 cancelled
     if (!['pending', 'approved'].includes(b.status)) {

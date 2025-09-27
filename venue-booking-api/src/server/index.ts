@@ -21,25 +21,36 @@ const app = express()
 // 1) 信任反向代理（Render / Proxy 後面）
 app.set('trust proxy', 1)
 
-// 2) 安全標頭
+// 2) 安全標頭（保持預設即可）
 app.use(helmet())
 
-// 3) CORS
-const ALLOWED_ORIGINS = (process.env.CORS_ORIGIN ?? 'https://venue-booking-frontend-a3ib.onrender.com')
+// 3) CORS（允許跨網域＋攜帶 Cookie）
+const ALLOWED_ORIGINS = (process.env.CORS_ORIGIN ??
+  'https://venue-booking-frontend-a3ib.onrender.com')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean)
 
-app.use(
-  cors({
-    origin: (origin, cb) => {
-      if (!origin) return cb(null, true) // Postman/curl
-      if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true)
-      return cb(new Error('Not allowed by CORS'))
-    },
-    credentials: true,
-  })
-)
+const corsOptions: cors.CorsOptions = {
+  origin(origin, cb) {
+    if (!origin) return cb(null, true) // Postman/curl/同源
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true)
+    return cb(new Error('Not allowed by CORS'))
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type',
+    'X-CSRF-Token',
+    'X-Requested-With',
+    'Authorization',
+  ],
+  exposedHeaders: ['X-CSRF-Token'],
+}
+
+app.use(cors(corsOptions))
+// 預檢請求
+app.options('*', cors(corsOptions))
 
 // 4) JSON + Cookie
 app.use(express.json())
@@ -48,13 +59,14 @@ app.use(cookieParser())
 /* ----------------------------- Session（Postgres） ----------------------------- */
 const sessionSecret = process.env.SESSION_SECRET || 'please-change-me'
 
+// 使用 Postgres 當 session store（你已在 Neon 建好 "session" 表）
 let store: session.Store | undefined
 if (process.env.DATABASE_URL) {
   const PgStore = connectPgSimple(session)
   const pgPool = new pg.Pool({ connectionString: process.env.DATABASE_URL })
   store = new PgStore({
     pool: pgPool,
-    tableName: 'session', // 你已在 Neon 建好此表
+    tableName: 'session',
   })
   console.log('[api] session store: Postgres')
 } else {
@@ -63,15 +75,17 @@ if (process.env.DATABASE_URL) {
 
 app.use(
   session({
+    name: 'vbsid',                 // 自訂 cookie 名稱
     store,
     secret: sessionSecret,
     resave: false,
     saveUninitialized: false,
+    rolling: true,                 // 每次請求都續期
     cookie: {
       httpOnly: true,
-      sameSite: 'none', // 跨網域（前端/後端不同網域）
-      secure: true,     // 必須 HTTPS（Render 會是 HTTPS）
-      maxAge: 1000 * 60 * 60 * 2, // 2 小時
+      sameSite: 'none',            // 前後端不同網域必須 None
+      secure: true,                // 必須 HTTPS（Render 是 HTTPS）
+      maxAge: 1000 * 60 * 60 * 4,  // 4 小時
     },
   })
 )
@@ -94,8 +108,17 @@ const loginLimiter = rateLimit({
 })
 app.use('/api/admin/login', loginLimiter)
 
-// CSRF
-const csrfProtection = csrf({ cookie: true }) as unknown as RequestHandler
+// CSRF（cookie 模式；與 session 分離）
+const csrfProtection = csrf({
+  cookie: {
+    key: 'vbx-csrf',
+    httpOnly: true,        // 前端不可讀，搭配 header 送回
+    sameSite: 'none',
+    secure: true,
+  },
+}) as unknown as RequestHandler
+
+// 提供 CSRF token（前端拿到後，之後請求放到 header: X-CSRF-Token）
 app.get('/api/csrf', csrfProtection, (req, res) => {
   const token = (req as any).csrfToken?.() ?? ''
   res.json({ csrfToken: token })
@@ -104,13 +127,20 @@ app.get('/api/csrf', csrfProtection, (req, res) => {
 // 健康檢查
 app.get('/api/health', (_req, res) => res.json({ ok: true }))
 
-// Debug Session（除錯用；穩定後可移除）
+// Debug：檢視 session（問題排查用）
 app.get('/api/debug/session', (req, res) => {
   res.json({
     origin: req.headers.origin,
     cookieNames: Object.keys(req.cookies || {}),
     sessionUser: (req as any).session?.user ?? null,
     hasSession: Boolean((req as any).session),
+  })
+})
+
+// Debug：檢視原始 cookie 標頭（問題排查用）
+app.get('/api/debug/cookies', (req, res) => {
+  res.json({
+    cookieHeader: req.headers.cookie ?? null,
   })
 })
 
