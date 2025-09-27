@@ -1,7 +1,7 @@
 // src/web/pages/bookingpage.tsx
 import React, { useMemo, useState } from 'react'
-import { apiFetch } from '../lib/api'                              // ✅ 統一從這裡打 API（自帶 Cookie + VITE_API_BASE）
-import SubmitWithTermsGate from '../components/SubmitWithTermsGate' // ✅ 同意規範門檻
+import { apiFetch } from '../web/lib/api'                              // ✅ 統一從這裡打 API（自帶 Cookie + VITE_API_BASE）
+import SubmitWithTermsGate from '../web/components/SubmitWithTermsGate' // ✅ 同意規範門檻
 
 // ---- 主題顏色（可改）----
 const BRAND = '#0F6FFF'
