@@ -1,8 +1,7 @@
+// src/web/pages/bookingpage.tsx
 import React, { useMemo, useState } from 'react'
-
-/** ← 新增：可由 App 傳入 apiBase；沒傳則退回到環境變數（本地可為空字串→走 Vite 代理） */
-type Props = { apiBase?: string }
-const ENV_API_BASE = import.meta.env.VITE_API_BASE_URL || ''
+import { apiFetch } from '../lib/api'                              // ✅ 統一從這裡打 API（自帶 Cookie + VITE_API_BASE）
+import SubmitWithTermsGate from '../components/SubmitWithTermsGate' // ✅ 同意規範門檻
 
 // ---- 主題顏色（可改）----
 const BRAND = '#0F6FFF'
@@ -34,13 +33,11 @@ function* daysBetween(a: Date, b: Date) { const d = new Date(a); while (d <= b) 
 function withinTwoWeeks(a: Date, b: Date) { const days = Math.floor((b.getTime() - a.getTime()) / 86400000) + 1; return days > 0 && days <= MAX_DAYS }
 function hhmm(d: Date) { return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` }
 
-export default function BookingPage({ apiBase }: Props) {
-  const API_BASE = (apiBase ?? ENV_API_BASE ?? '').replace(/\/+$/, '') // 去尾斜線，避免 //api
-
+export default function BookingPage() {
   // 申請人與場地
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
-  const [phone, setPhone] = useState('') // ✅ 新增電話
+  const [phone, setPhone] = useState('') // ✅ 電話
   const [reason, setReason] = useState('')
   const [venue, setVenue] = useState<Venue>('大會堂')
 
@@ -97,8 +94,11 @@ export default function BookingPage({ apiBase }: Props) {
     return arr
   }, [repeat, rangeStart, rangeEnd, timeHHMM, weekday])
 
+  // ✅ 真正送單（統一用 apiFetch）
   async function submit() {
     setErr(null); setOkMsg(null)
+
+    // 前端欄位驗證
     if (!name.trim()) return setErr('請輸入申請者姓名')
     if (!/^[^@]+@[^@]+\.[^@]+$/.test(email.trim())) return setErr('請輸入有效的 E-Mail')
     if (!/^[\d+\-\s()]{8,}$/.test(phone.trim())) return setErr('請輸入有效的電話號碼')
@@ -135,21 +135,20 @@ export default function BookingPage({ apiBase }: Props) {
       }
 
       let success = 0
-      // 逾時保護
+
+      // 逾時保護 + 後端錯誤翻譯
       const doPost = async (p: any) => {
         const ac = new AbortController()
         const timer = setTimeout(() => ac.abort('timeout'), 8000)
         try {
-          const r = await fetch(`${API_BASE}/api/bookings`, {
+          const r = await apiFetch('/api/bookings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',      // ✅ 一律帶 Cookie（Session）
             body: JSON.stringify(p),
             signal: ac.signal,
           })
           if (!r.ok) {
             const j = await r.json().catch(() => ({}))
-            // 與後端約定的錯誤字串（可依你實作微調）
             if (j?.error === 'must_accept_terms') throw new Error('需先同意借用規範後才能申請。')
             if (r.status === 401) throw new Error('未登入或尚未建立使用者，請先登入。')
             if (j?.error?.includes('overlap') || String(j?.error || '').includes('重疊')) throw new Error('申請時間與既有預約重疊，請調整後再送出。')
@@ -211,7 +210,7 @@ export default function BookingPage({ apiBase }: Props) {
           <input className={inputCx} value={email} onChange={e => setEmail(e.target.value)} placeholder="name@example.com" type="email" />
         </div>
 
-        {/* 電話號碼（新增） */}
+        {/* 電話號碼 */}
         <div className="mb-5">
           <label className="block text-sm font-medium text-slate-700 mb-1">電話</label>
           <input className={inputCx} value={phone} onChange={e => setPhone(e.target.value)} placeholder="例如：0912-345-678 或 04-1234-5678" />
@@ -377,10 +376,8 @@ export default function BookingPage({ apiBase }: Props) {
 
       {/* 頁面底部操作列 */}
       <div className="mt-4 pb-8">
-        <button className={primaryBtnCx} disabled={submitting} onClick={submit}>
-          {submitting ? '送出中…' : '送出申請單'}
-        </button>
-
+        {/* ✅ 用 SubmitWithTermsGate 包住，確保同意規範後才送單 */}
+        <SubmitWithTermsGate onSubmit={submit} label={submitting ? '送出中…' : '送出申請單'} />
         {/* 訊息區 */}
         {err && <div className="mt-3 text-sm text-red-600 text-center">{err}</div>}
         {okMsg && <div className="mt-3 text-sm text-green-700 text-center">{okMsg}</div>}

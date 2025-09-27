@@ -1,10 +1,11 @@
 // src/web/components/SubmitWithTermsGate.tsx
 import { useEffect, useState } from 'react'
 import TermsGateModal from './TermsGateModal'
+import { apiFetch } from '../lib/api' // ✅ 改用共用 API 呼叫
 
 type Props = {
-  onSubmit: () => Promise<void> | void    // 你的原本送單函式
-  label?: string                           // 按鈕文字
+  onSubmit: () => Promise<void> | void // 你的原本送單函式
+  label?: string                        // 按鈕文字
   className?: string
 }
 
@@ -18,13 +19,12 @@ export default function SubmitWithTermsGate({ onSubmit, label = '送出申請單
     let cancelled = false
     ;(async () => {
       try {
-        const r = await fetch('/api/terms/status', { credentials: 'include' })
+        const r = await apiFetch('/api/terms/status') // ✅ 用 apiFetch（帶上 API_BASE + Cookie）
         if (!cancelled && r.ok) {
           const data = await r.json()
           const already = !!data?.accepted
           setOpen(!already)
         } else if (!cancelled) {
-          // 後端沒有 /status 的情況，用 localStorage 判斷
           const already = localStorage.getItem('termsAccepted') === 'true'
           setOpen(!already)
         }
@@ -39,9 +39,8 @@ export default function SubmitWithTermsGate({ onSubmit, label = '送出申請單
   }, [])
 
   async function handleClick() {
-    // 若還在檢查狀態，就先不送
     if (checking) return
-    // 若需要同意，先彈窗（TermsGateModal 裡按「同意」才會關閉）
+    // 需要同意 → 先彈窗（TermsGateModal 裡按「同意」才會關閉）
     if (open) {
       setOpen(true)
       return
@@ -59,9 +58,9 @@ export default function SubmitWithTermsGate({ onSubmit, label = '送出申請單
   async function handleAgreed() {
     localStorage.setItem('termsAccepted', 'true')
     try {
-      await fetch('/api/terms/accept', { method: 'POST', credentials: 'include' })
+      await apiFetch('/api/terms/accept', { method: 'POST' }) // ✅ 用 apiFetch
     } catch {
-      // 容錯：後端暫時失敗仍放行
+      // 容錯：後端暫時失敗仍放行（前端已記錄同意）
     }
     setOpen(false)
     setSubmitting(true)

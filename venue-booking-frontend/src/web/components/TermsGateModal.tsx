@@ -1,5 +1,6 @@
 // src/web/components/TermsGateModal.tsx
 import { useEffect, useRef, useState } from 'react'
+import { apiFetch } from '../lib/api'   // ✅ 新增：共用 API 呼叫
 
 type Props = {
   open: boolean
@@ -26,9 +27,8 @@ export default function TermsGateModal({ open, onClose, onAgreed }: Props) {
 
   async function recordAgreementOnServer() {
     try {
-      await fetch('/api/terms/accept', {
+      await apiFetch('/api/terms/accept', {   // ✅ 改用 apiFetch
         method: 'POST',
-        credentials: 'include', // 必須帶 cookie
       })
     } catch (e) {
       console.error('[TermsGate] recordAgreementOnServer failed', e)
