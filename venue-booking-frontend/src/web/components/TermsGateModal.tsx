@@ -11,22 +11,18 @@ export default function TermsGateModal({ open, onClose, onAgreed }: Props) {
   const [submitting, setSubmitting] = useState(false)
   const agreeBtnRef = useRef<HTMLButtonElement | null>(null)
 
-  // 不開就不渲染（避免背景可聚焦）
-  if (!open) return null
-
-  // 初次開啟把焦點放到「同意」按鈕
+  // ★ Hook 一律無條件呼叫；在 effect 內再看 open
   useEffect(() => {
+    if (!open) return
     agreeBtnRef.current?.focus()
-  }, [])
+  }, [open])
 
-  // Esc 關閉
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [open, onClose])
 
   async function recordAgreementOnServer() {
     try {
@@ -40,11 +36,7 @@ export default function TermsGateModal({ open, onClose, onAgreed }: Props) {
   }
 
   function setAgreedLocal() {
-    try {
-      localStorage.setItem('termsAccepted', 'true')
-    } catch {
-      /* ignore */
-    }
+    try { localStorage.setItem('termsAccepted', 'true') } catch {}
   }
 
   async function agree() {
@@ -59,6 +51,9 @@ export default function TermsGateModal({ open, onClose, onAgreed }: Props) {
     }
   }
 
+  // ★ 早退 return 放在所有 Hook 之後（不再破壞 Hook 次序）
+  if (!open) return null
+
   return (
     <div
       role="dialog"
@@ -66,11 +61,11 @@ export default function TermsGateModal({ open, onClose, onAgreed }: Props) {
       aria-labelledby="termsgate-title"
       aria-describedby="termsgate-desc"
       className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/50 p-4"
-      onClick={onClose} // 點 backdrop 關閉
+      onClick={onClose}
     >
       <div
         className="w-full max-w-2xl rounded-xl bg-white shadow-xl ring-1 ring-black/5"
-        onClick={(e) => e.stopPropagation()} // 阻止冒泡，不要點到內層就關掉
+        onClick={(e) => e.stopPropagation()}
       >
         <div className="px-6 pt-5 pb-4">
           <h2 id="termsgate-title" className="text-lg font-semibold">
@@ -84,12 +79,7 @@ export default function TermsGateModal({ open, onClose, onAgreed }: Props) {
             <li>違反規範將影響後續借用資格。</li>
           </ol>
           <div className="mt-3 text-sm">
-            <a
-              className="text-blue-600 hover:underline"
-              href="/terms"
-              target="_blank"
-              rel="noreferrer"
-            >
+            <a className="text-blue-600 hover:underline" href="/terms" target="_blank" rel="noreferrer">
               查看完整借用規範（新分頁）
             </a>
           </div>
