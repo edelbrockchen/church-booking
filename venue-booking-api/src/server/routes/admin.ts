@@ -1,5 +1,5 @@
 // venue-booking-api/src/server/routes/admin.ts
-import { Router } from 'express'
+import { Router, type Request, type Response, type NextFunction } from 'express'
 import { z } from 'zod'
 import * as bcrypt from 'bcryptjs'
 import { makePool } from '../db'
@@ -26,13 +26,13 @@ const adminUsers = loadAdminUsers()
 const fallbackPassword = process.env.ADMIN_PASSWORD ?? ''
 
 /* ----------------------------- 中介層：權限 ----------------------------- */
-function ensureAdmin(req: any, res: any, next: any) {
-  const user = req.session?.user
+function ensureAdmin(req: Request, res: Response, next: NextFunction) {
+  const user = (req as any).session?.user
   if (!user || user.role !== 'admin') {
-    // 協助定位「未授權」：是沒 cookie？沒 session？還是沒有 user？
+    // 協助定位「未授權」
     console.warn('[admin][ensureAdmin] unauthorized', {
       origin: req.headers.origin,
-      hasSession: Boolean(req.session),
+      hasSession: Boolean((req as any).session),
       hasUser: Boolean(user),
       cookie: req.headers.cookie ? 'present' : 'missing',
     })
@@ -48,7 +48,7 @@ adminRouter.get('/me', (req, res) => {
   res.json({ user })
 })
 
-// 登入（使用 bcrypt.compare）
+// 登入（bcrypt + regenerate → set user → save）
 adminRouter.post('/login', async (req, res) => {
   const schema = z.object({
     username: z.string().min(1),
@@ -59,6 +59,7 @@ adminRouter.post('/login', async (req, res) => {
 
   const { username, password } = p.data
 
+  // 先比對使用者專屬 bcrypt；若沒有，再回退共用密碼（如仍保留）
   const hash = adminUsers[username]
   let ok = false
 
@@ -70,18 +71,28 @@ adminRouter.post('/login', async (req, res) => {
       return res.status(500).json({ error: 'server_error' })
     }
   } else if (fallbackPassword) {
-    // 相容：該帳號不在 JSON 內時，若仍有共用密碼則允許
     ok = password === fallbackPassword
   }
 
   if (!ok) return res.status(401).json({ error: 'invalid_credentials' })
 
-  ;(req as any).session.user = {
-    id: `admin:${username}`,
-    role: 'admin',
-    name: username,
-  }
-  res.json({ ok: true })
+  // ✅ 關鍵：重生 session（防固定攻擊）→ 設 user → 保存後回覆
+  (req as any).session.regenerate((regenErr: any) => {
+    if (regenErr) {
+      console.error('[admin][login] regenerate error:', regenErr)
+      return res.status(500).json({ error: 'server_error' })
+    }
+
+    ;(req as any).session.user = { id: `admin:${username}`, role: 'admin', name: username }
+
+    ;(req as any).session.save((saveErr: any) => {
+      if (saveErr) {
+        console.error('[admin][login] save error:', saveErr)
+        return res.status(500).json({ error: 'server_error' })
+      }
+      return res.json({ ok: true })
+    })
+  })
 })
 
 // 登出
