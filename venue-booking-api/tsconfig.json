@@ -1,19 +1,14 @@
 {
   "compilerOptions": {
-    "target": "ES2022",                  // 支援較新的 JS 特性
-    "lib": ["DOM", "DOM.Iterable", "ES2022"], 
-    "module": "ESNext",                  // Vite/前端建議使用 ESNext
+    "target": "ES2022",                 
+    "module": "CommonJS",               // 後端用 CommonJS，Node.js 最穩定
     "moduleResolution": "Node",
-    "jsx": "react-jsx",                  // ✅ 必須：讓 TS 認識 JSX 語法
+    "outDir": "dist",                   // 編譯後輸出到 dist/
+    "rootDir": "src",                   // 來源根目錄（會保留 server/ 子資料夾）
     "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true,
     "strict": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "noEmit": true                       // 前端專案交給 Vite 處理，不輸出 JS 檔
+    "skipLibCheck": true
   },
-  "include": ["src/**/*"],
+  "include": ["src/server/**/*"],       // 只編譯後端程式碼
   "exclude": ["node_modules", "dist"]
 }
