@@ -1,3 +1,4 @@
+// src/server/migrate.ts
 import { makePool } from './db'
 
 async function main() {
@@ -14,7 +15,7 @@ async function main() {
     // 1) extension
     await c.query('CREATE EXTENSION IF NOT EXISTS btree_gist;')
 
-    // 2) table（新建時就含 created_by / category / note）
+    // 2) bookings 表（含完整欄位）
     await c.query(
       [
         'CREATE TABLE IF NOT EXISTS bookings (',
@@ -33,7 +34,7 @@ async function main() {
       ].join('\n')
     )
 
-    // 3) columns（既有表補欄位：安全可重複執行）
+    // 3) bookings 欄位補強（可重複執行）
     await c.query("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';")
     await c.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;')
     await c.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS reviewed_by TEXT;')
@@ -42,7 +43,7 @@ async function main() {
     await c.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS category TEXT;')
     await c.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS note TEXT;')
 
-    // 4) exclusion constraint（避免時間重疊）
+    // 4) bookings 不允許時間重疊
     await c.query(
       [
         'DO $$',
@@ -55,6 +56,29 @@ async function main() {
         '  END IF;',
         'END',
         '$$;'
+      ].join('\n')
+    )
+
+    // 5) terms_accept 表（記錄誰同意規範）
+    await c.query(
+      [
+        'CREATE TABLE IF NOT EXISTS terms_accept (',
+        '  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),',
+        '  user_id TEXT NOT NULL,',
+        '  accepted_at TIMESTAMPTZ NOT NULL DEFAULT now()',
+        ');'
+      ].join('\n')
+    )
+
+    // 6) session 表（給 connect-pg-simple 使用）
+    await c.query(
+      [
+        'CREATE TABLE IF NOT EXISTS "session" (',
+        '  sid varchar NOT NULL COLLATE "default",',
+        '  sess json NOT NULL,',
+        '  expire timestamp(6) NOT NULL',
+        ');',
+        'ALTER TABLE "session" ADD CONSTRAINT "session_pkey" PRIMARY KEY ("sid");'
       ].join('\n')
     )
 
