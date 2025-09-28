@@ -1,5 +1,9 @@
 // src/web/lib/api.ts
-const API_BASE = import.meta.env.VITE_API_BASE?.replace(/\/$/, '') || ''
+const DEFAULT_API_BASE = 'https://venue-booking-api-rjes.onrender.com'
+
+const API_BASE = (
+  import.meta.env.VITE_API_BASE || DEFAULT_API_BASE
+).replace(/\/$/, '')
 
 export function apiUrl(path: string) {
   return `${API_BASE}${path}`
