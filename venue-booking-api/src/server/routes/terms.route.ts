@@ -10,14 +10,21 @@ export function createTermsRouter(pool: Pool) {
     return (req as any).session?.user?.id ?? null
   }
 
+  // 快取控制（避免 /status 被 cache）
+  function noStore(res: Response) {
+    res.setHeader('Cache-Control', 'no-store')
+  }
+
   // 目前同意記錄的資料表結構（請確認與 DB 一致）
   // CREATE TABLE IF NOT EXISTS terms_acceptances (
   //   user_id VARCHAR(100) PRIMARY KEY,
   //   accepted_at TIMESTAMPTZ NOT NULL DEFAULT now()
   // );
 
-  /** 查詢是否已同意 */
+  /** GET /api/terms/status：查詢是否已同意 */
   r.get('/status', async (req: Request, res: Response) => {
+    noStore(res)
+
     const userId = getUserId(req)
     if (!userId) {
       // 未登入/無 userId → 視為未同意（讓前端出現彈窗）
@@ -34,12 +41,14 @@ export function createTermsRouter(pool: Pool) {
     } catch (e) {
       console.error('[terms][status] db error:', e)
       // 容錯：不要 500 擋住 UI；回未同意即可
-      return res.json({ accepted: false })
+      return res.json({ accepted: false, degraded: true })
     }
   })
 
-  /** 同意條款（upsert） */
+  /** POST /api/terms/accept：同意條款（upsert） */
   r.post('/accept', async (req: Request, res: Response) => {
+    noStore(res)
+
     const userId = getUserId(req)
     if (!userId) return res.status(401).json({ error: 'unauthorized' })
 
@@ -56,7 +65,7 @@ export function createTermsRouter(pool: Pool) {
       return res.json({ ok: true, accepted: true })
     } catch (e) {
       console.error('[terms][accept] db error:', e)
-      // 容錯：回 200 讓前端流程可繼續（前端會已在 localStorage 標記）
+      // 容錯：回 200 讓前端流程可繼續（前端已在 localStorage 標記）
       return res.json({ ok: true, accepted: true, degraded: true })
     }
   })
