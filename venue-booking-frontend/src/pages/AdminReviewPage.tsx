@@ -12,7 +12,7 @@ type Item = {
   rejection_reason?: string | null
 }
 
-export default function AdminReviewPage({ apiBase }: { apiBase: string }) {
+export default function AdminReviewPage() {
   const [authed, setAuthed] = useState(false)
   const [user, setUser] = useState('')
   const [pwd, setPwd] = useState('')
@@ -35,7 +35,7 @@ export default function AdminReviewPage({ apiBase }: { apiBase: string }) {
   async function login() {
     setLoginMsg(null)
     try {
-      const r = await fetch(`${apiBase}/api/admin/login`, {
+      const r = await apiFetch('/api/admin/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include', // 關鍵：一定要帶 cookie
@@ -68,7 +68,7 @@ export default function AdminReviewPage({ apiBase }: { apiBase: string }) {
 
   async function load() {
     setLoading(true)
-    const r = await fetch(`${apiBase}/api/admin/review`, { credentials: 'include' })
+    const r = await apiFetch('/api/admin/review', { credentials: 'include' })
     if (r.status === 401) {
       setAuthed(false)
       setLoginMsg('登入狀態失效，請重新登入')
@@ -85,7 +85,7 @@ export default function AdminReviewPage({ apiBase }: { apiBase: string }) {
   }
 
   async function approve(id: string) {
-    const r = await fetch(`${apiBase}/api/admin/bookings/${id}/approve`, {
+    const r = await apiFetch(`/api/admin/bookings/${id}/approve`, {
       method: 'POST',
       credentials: 'include'
     })
@@ -97,7 +97,7 @@ export default function AdminReviewPage({ apiBase }: { apiBase: string }) {
   }
 
   async function reject(id: string) {
-    const r = await fetch(`${apiBase}/api/admin/bookings/${id}/reject`, {
+    const r = await apiFetch(`/api/admin/bookings/${id}/reject`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
