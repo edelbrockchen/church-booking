@@ -1,6 +1,7 @@
+// venue-booking-frontend/src/pages/BookingPage.tsx
 import React, { useMemo, useState } from 'react'
-import SubmitWithTermsGate from '../components/SubmitWithTermsGate'
-import { apiFetch } from '../lib/api'
+import SubmitWithTermsGate from '../web/components/SubmitWithTermsGate'
+import { apiFetch } from '../web/lib/api'
 
 type Category = '教會聚會' | '婚禮' | '研習' | '其他'
 
@@ -16,8 +17,8 @@ function parseLocal(v: string) { const d = new Date(v); return isNaN(d.getTime()
 function latestEndCap(d: Date) {
   const wd = d.getDay()
   const cap = new Date(d)
-  if (wd === 1 || wd === 3) cap.setHours(18, 0, 0, 0)
-  else cap.setHours(21, 30, 0, 0)
+  if (wd === 1 || wd === 3) cap.setHours(18, 0, 0, 0)   // 週一/週三最晚 18:00
+  else cap.setHours(21, 30, 0, 0)                       // 其他日最晚 21:30
   return cap
 }
 
@@ -57,7 +58,7 @@ export default function BookingPage() {
         note: note.trim() || undefined,
         created_by: createdBy.trim() || undefined,
       }
-      const r = await apiFetch('/api/bookings', {
+      await apiFetch('/api/bookings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -139,7 +140,7 @@ export default function BookingPage() {
       {resultMsg && <div className="text-sm text-emerald-700">{resultMsg}</div>}
 
       <p className="text-xs text-slate-500">
-        伺服器會最終決定結束時間（3 小時上限；週一/三最晚 18:00，其餘最晚 21:30）。
+        伺服器會最終決定結束時間（3 小時上限；週一/週三最晚 18:00，其餘最晚 21:30）。
       </p>
     </div>
   )
