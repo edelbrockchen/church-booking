@@ -5,11 +5,16 @@ import type { Pool } from 'pg'
 export function createTermsRouter(pool: Pool) {
   const r = Router()
 
+  // 是否允許 guest 同意條款（預設 true）
+  const ALLOW_GUEST_TERMS =
+    (process.env.ALLOW_GUEST_TERMS ?? 'true').toLowerCase() === 'true'
+
   // 依你實際 session 結構調整
-  // ✅ 修正：若為 guest（在全域 middleware 建立的 guest:{sessionID}），視為未登入
+  // ✅ 修復法 A：允許 guest:... 也當作有效使用者（可寫入 terms）
   function getUserId(req: Request): string | null {
     const u = (req as any).session?.user
-    if (!u || u.role === 'guest') return null
+    if (!u) return null
+    if (!ALLOW_GUEST_TERMS && u.role === 'guest') return null
     return u.id
   }
 
@@ -30,7 +35,7 @@ export function createTermsRouter(pool: Pool) {
 
     const userId = getUserId(req)
     if (!userId) {
-      // 未登入時，不報錯，直接告知未同意（讓前端彈窗/提示）
+      // 沒有任何 session/user（理論上不會發生，保底）
       return res.status(200).json({
         accepted: false,
         acceptedAt: null,
