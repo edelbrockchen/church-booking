@@ -1,14 +1,24 @@
 // src/web/lib/api.ts
 const DEFAULT_API_BASE = 'https://venue-booking-api-rjes.onrender.com'
-
 const API_BASE = (import.meta.env.VITE_API_BASE || DEFAULT_API_BASE).replace(/\/$/, '')
 
 export function apiUrl(path: string) {
-  const cleanPath = path.startsWith('/') ? path : `/${path}`
-  return `${API_BASE}${cleanPath}`
+  if (!path) path = '/'
+  let clean = path.startsWith('/') ? path : `/${path}`
+
+  // 🛡 防呆：偵測錯誤的 :splat
+  if (clean.includes(':splat')) {
+    const err = new Error(`Invalid API path contains ":splat": ${clean}`)
+    // 印出誰呼叫的（堆疊），方便你在 Console 看到來源
+    console.error(err)
+    // 直接丟錯，避免真的送出錯誤請求
+    throw err
+  }
+
+  return `${API_BASE}${clean}`
 }
 
-async function _fetchJson(path: string, init?: RequestInit) {
+async function _json(path: string, init?: RequestInit) {
   const res = await fetch(apiUrl(path), {
     credentials: 'include',
     headers: {
@@ -18,21 +28,11 @@ async function _fetchJson(path: string, init?: RequestInit) {
     },
     ...init,
   })
-  if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`[${res.status}] ${text || res.statusText}`)
-  }
+  if (!res.ok) throw new Error(`[${res.status}] ${await res.text().catch(()=> '')}`)
   return res.status === 204 ? null : res.json()
 }
 
-// 你原本的 apiFetch（保留），適合拿來 GET 不處理 body
-export const apiFetch = _fetchJson
-
-// 便捷方法（建議新用這些）
-export const apiGet  = (path: string) => _fetchJson(path)
-export const apiPost = (path: string, data?: unknown) =>
-  _fetchJson(path, { method: 'POST', body: data ? JSON.stringify(data) : undefined })
-export const apiPut  = (path: string, data?: unknown) =>
-  _fetchJson(path, { method: 'PUT', body: data ? JSON.stringify(data) : undefined })
-export const apiDel  = (path: string) =>
-  _fetchJson(path, { method: 'DELETE' })
+export const apiGet  = (p: string) => _json(p)
+export const apiPost = (p: string, data?: unknown) =>
+  _json(p, { method: 'POST', body: data ? JSON.stringify(data) : undefined })
+export const apiDel  = (p: string) => _json(p, { method: 'DELETE' })
