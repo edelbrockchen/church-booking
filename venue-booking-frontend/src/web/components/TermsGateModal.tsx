@@ -1,6 +1,6 @@
 // src/web/components/TermsGateModal.tsx
 import { useEffect, useRef, useState } from 'react'
-import { apiFetch } from '../lib/api'   // ✅ 新增：共用 API 呼叫
+import { apiFetch } from '../lib/api'
 
 type Props = {
   open: boolean
@@ -12,31 +12,45 @@ export default function TermsGateModal({ open, onClose, onAgreed }: Props) {
   const [submitting, setSubmitting] = useState(false)
   const agreeBtnRef = useRef<HTMLButtonElement | null>(null)
 
-  // ★ Hook 一律無條件呼叫；在 effect 內再看 open
+  // 開啟時聚焦同意按鈕
   useEffect(() => {
     if (!open) return
     agreeBtnRef.current?.focus()
   }, [open])
 
+  // 開啟時允許 Esc 關閉
   useEffect(() => {
     if (!open) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open, onClose])
 
+  // 開啟時鎖住 body 捲動
+  useEffect(() => {
+    if (!open) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = prev }
+  }, [open])
+
   async function recordAgreementOnServer() {
     try {
-      await apiFetch('/api/terms/accept', {   // ✅ 改用 apiFetch
-        method: 'POST',
-      })
+      await apiFetch('/api/terms/accept', { method: 'POST' })
     } catch (e) {
+      // 容錯：後端暫時失敗也不阻擋
       console.error('[TermsGate] recordAgreementOnServer failed', e)
     }
   }
 
   function setAgreedLocal() {
-    try { localStorage.setItem('termsAccepted', 'true') } catch {}
+    try {
+      localStorage.setItem('termsAccepted', 'true')
+    } catch {
+      /* ignore */
+    }
   }
 
   async function agree() {
@@ -44,14 +58,14 @@ export default function TermsGateModal({ open, onClose, onAgreed }: Props) {
     setSubmitting(true)
     try {
       setAgreedLocal()
-      await recordAgreementOnServer() // 容錯：失敗也放行
+      await recordAgreementOnServer()
     } finally {
       setSubmitting(false)
       onAgreed()
     }
   }
 
-  // ★ 早退 return 放在所有 Hook 之後（不再破壞 Hook 次序）
+  // 注意：早退 return 需放在所有 Hooks 之後，避免破壞 Hook 呼叫次序
   if (!open) return null
 
   return (
@@ -74,12 +88,17 @@ export default function TermsGateModal({ open, onClose, onAgreed }: Props) {
           <ol id="termsgate-desc" className="list-decimal pl-6 mt-3 space-y-1 text-sm text-gray-700">
             <li>週日不可預約。</li>
             <li>每次固定 3 小時，超時不受理。</li>
-            <li>週一/週三最晚離場 18:00，其餘日最晚 21:30。</li>
+            <li>週一／週三最晚離場 18:00，其餘日最晚 21:30。</li>
             <li>請維護場地整潔並準時歸還。</li>
             <li>違反規範將影響後續借用資格。</li>
           </ol>
           <div className="mt-3 text-sm">
-            <a className="text-blue-600 hover:underline" href="/terms" target="_blank" rel="noreferrer">
+            <a
+              className="text-blue-600 hover:underline"
+              href="/terms"
+              target="_blank"
+              rel="noreferrer"
+            >
               查看完整借用規範（新分頁）
             </a>
           </div>

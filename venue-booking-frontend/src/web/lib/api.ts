@@ -1,4 +1,3 @@
-// src/web/lib/api.ts
 const DEFAULT_API_BASE = 'https://venue-booking-api-rjes.onrender.com'
 
 const API_BASE = (
