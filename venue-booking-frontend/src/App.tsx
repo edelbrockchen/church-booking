@@ -12,7 +12,7 @@ import { isAgreedLocal, setAgreedLocal, recordAgreementOnServer, fetchAgreementF
 import TermsGateModal from './components/TermsGateModal'
 
 type Tab = 'calendar' | 'rules' | 'apply' | 'admin'
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
+// API base handled inside api.ts; no need here
 
 const fadeUp = {
   initial: { opacity: 0, y: 8 },
@@ -100,7 +100,7 @@ export default function App() {
           )}
           {tab === 'admin' && (
             <motion.section key="admin" {...fadeUp}>
-              <AdminReviewPage apiBase={API_BASE} />
+              <AdminReviewPage />
             </motion.section>
           )}
         </AnimatePresence>
