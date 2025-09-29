@@ -1,23 +1,26 @@
-// venue-booking-api/src/server/routes/terms.route.ts
+// src/server/routes/terms.route.ts
 import { Router, type Request, type Response } from 'express'
 import type { Pool } from 'pg'
 
 export function createTermsRouter(pool: Pool) {
   const r = Router()
 
-  // 依你實際的 session 結構調整
+  // 依你實際 session 結構調整
+  // ✅ 修正：若為 guest（在全域 middleware 建立的 guest:{sessionID}），視為未登入
   function getUserId(req: Request): string | null {
-    return (req as any).session?.user?.id ?? null
+    const u = (req as any).session?.user
+    if (!u || u.role === 'guest') return null
+    return u.id
   }
 
-  // 快取控制（避免 /status 被 cache）
+  // 避免被快取
   function noStore(res: Response) {
     res.setHeader('Cache-Control', 'no-store')
   }
 
-  // 目前同意記錄的資料表結構（請確認與 DB 一致）
+  // -- Schema 參考（請確認 DB 內已建立）
   // CREATE TABLE IF NOT EXISTS terms_acceptances (
-  //   user_id VARCHAR(100) PRIMARY KEY,
+  //   user_id     VARCHAR(100) PRIMARY KEY,
   //   accepted_at TIMESTAMPTZ NOT NULL DEFAULT now()
   // );
 
@@ -27,21 +30,32 @@ export function createTermsRouter(pool: Pool) {
 
     const userId = getUserId(req)
     if (!userId) {
-      // 未登入/無 userId → 視為未同意（讓前端出現彈窗）
-      return res.json({ accepted: false })
+      // 未登入時，不報錯，直接告知未同意（讓前端彈窗/提示）
+      return res.status(200).json({
+        accepted: false,
+        acceptedAt: null,
+        reason: 'unauthenticated',
+      })
     }
 
     try {
-      const { rows } = await pool.query(
-        'SELECT 1 FROM terms_acceptances WHERE user_id = $1 LIMIT 1',
+      const { rows } = await pool.query<{ accepted_at: string }>(
+        'SELECT accepted_at FROM terms_acceptances WHERE user_id = $1 LIMIT 1',
         [userId]
       )
-      const accepted = (rows?.length ?? 0) > 0
-      return res.json({ accepted })
+      const accepted = rows.length > 0
+      return res.json({
+        accepted,
+        acceptedAt: accepted ? rows[0].accepted_at : null,
+      })
     } catch (e) {
       console.error('[terms][status] db error:', e)
-      // 容錯：不要 500 擋住 UI；回未同意即可
-      return res.json({ accepted: false, degraded: true })
+      // 不中斷前端流程：標示 degraded，仍視為未同意
+      return res.status(200).json({
+        accepted: false,
+        acceptedAt: null,
+        degraded: true,
+      })
     }
   })
 
@@ -50,23 +64,35 @@ export function createTermsRouter(pool: Pool) {
     noStore(res)
 
     const userId = getUserId(req)
-    if (!userId) return res.status(401).json({ error: 'unauthorized' })
+    if (!userId) {
+      return res.status(401).json({ message: 'Unauthenticated' })
+    }
 
     try {
-      await pool.query(
+      const { rows } = await pool.query<{ accepted_at: string }>(
         `
-        INSERT INTO terms_acceptances (user_id)
-        VALUES ($1)
+        INSERT INTO terms_acceptances (user_id, accepted_at)
+        VALUES ($1, now())
         ON CONFLICT (user_id)
-        DO UPDATE SET accepted_at = now()
+        DO UPDATE SET accepted_at = EXCLUDED.accepted_at
+        RETURNING accepted_at
         `,
         [userId]
       )
-      return res.json({ ok: true, accepted: true })
+      return res.json({
+        ok: true,
+        accepted: true,
+        acceptedAt: rows[0]?.accepted_at ?? null,
+      })
     } catch (e) {
       console.error('[terms][accept] db error:', e)
-      // 容錯：回 200 讓前端流程可繼續（前端已在 localStorage 標記）
-      return res.json({ ok: true, accepted: true, degraded: true })
+      // 不中斷：讓前端可在 localStorage 做權宜標記
+      return res.status(200).json({
+        ok: true,
+        accepted: true,
+        acceptedAt: null,
+        degraded: true,
+      })
     }
   })
 

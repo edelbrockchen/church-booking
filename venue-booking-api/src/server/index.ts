@@ -33,7 +33,7 @@ const ALLOWED_ORIGINS = (process.env.CORS_ORIGIN ??
 
 const corsOptions: cors.CorsOptions = {
   origin(origin, cb) {
-    if (!origin) return cb(null, true) // Postman/curl
+    if (!origin) return cb(null, true) // Postman/curl/同源
     if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true)
     return cb(new Error('Not allowed by CORS'))
   },
@@ -116,7 +116,7 @@ const loginLimiter = rateLimit({
 })
 app.use('/api/admin/login', loginLimiter)
 
-// CSRF
+// CSRF（提供前端索取 Token 的端點；未對所有 API 強制）
 const csrfProtection = csrf({
   cookie: {
     key: 'vbx-csrf',
@@ -164,6 +164,11 @@ if (pool) {
 
 app.use('/api/bookings', bookingsRouter)
 app.use('/api/admin', adminRouter)
+
+/* -------- /api 兜底 404（放在所有 /api 路由之後） -------- */
+app.use('/api', (_req, res) => {
+  res.status(404).json({ error: 'api_not_found' })
+})
 
 /* ------------------------------- 監聽 ------------------------------- */
 const PORT = process.env.PORT || 3000
