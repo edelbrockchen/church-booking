@@ -1,5 +1,5 @@
-import React, { useState } from 'react'
-import { LogIn, RefreshCw, CheckCircle2, XCircle, AlertCircle } from 'lucide-react'
+import React, { useEffect, useState } from 'react'
+import { apiFetch } from '../web/lib/api'
 
 type Item = {
   id: string
@@ -10,215 +10,176 @@ type Item = {
   reviewed_at?: string | null
   reviewed_by?: string | null
   rejection_reason?: string | null
+  category?: string | null
+  note?: string | null
+  created_by?: string | null
 }
 
 export default function AdminReviewPage() {
   const [authed, setAuthed] = useState(false)
-  const [user, setUser] = useState('')
-  const [pwd, setPwd] = useState('')
-  const [items, setItems] = useState<Item[]>([])
   const [loading, setLoading] = useState(false)
-  const [reason, setReason] = useState('')
-  const [loginMsg, setLoginMsg] = useState<string | null>(null)
+  const [items, setItems] = useState<Item[]>([])
+  const [status, setStatus] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all')
 
-  async function checkMe(): Promise<boolean> {
-    try {
-      const r = await fetch(`${apiBase}/api/admin/me`, { credentials: 'include' })
-      if (!r.ok) return false
-      const j = await r.json().catch(() => ({} as any))
-      return !!j?.user
-    } catch {
-      return false
-    }
-  }
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [loginMsg, setLoginMsg] = useState<string>('')
 
-  async function login() {
-    setLoginMsg(null)
+  useEffect(() => {
+    load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authed, status])
+
+  async function login(e: React.FormEvent) {
+    e.preventDefault()
+    setLoginMsg('')
     try {
-      const r = await apiFetch('/api/admin/login', {
+      await apiFetch('/api/admin/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include', // 關鍵：一定要帶 cookie
-        body: JSON.stringify({ username: user, password: pwd })
+        body: JSON.stringify({ username, password }),
       })
-      if (!r.ok) {
-        setLoginMsg('帳號或密碼錯誤，或尚未設定')
-        return
-      }
-
-      // 登入成功 → 立刻檢查 /me，確認 session 是否建立
-      const ok = await checkMe()
-      if (!ok) {
-        setLoginMsg(
-          '未取得使用者資訊。可能原因：\n' +
-          '1) 瀏覽器阻擋跨站 Cookie（Safari/第三方 Cookie 設定）。\n' +
-          '2) 後端 CORS_ORIGIN 未包含前端網域。\n' +
-          '3) API 的 SameSite/secure 設定不正確（我們已設 sameSite=None, secure=true）。\n' +
-          '請嘗試重新登入，或改用 Chrome/Edge 再試。'
-        )
-        return
-      }
-
       setAuthed(true)
-      load()
-    } catch (e) {
-      setLoginMsg('登入時發生錯誤，請稍後再試')
+      setUsername('')
+      setPassword('')
+    } catch {
+      setLoginMsg('登入失敗，請檢查帳號/密碼')
+      setAuthed(false)
     }
   }
 
   async function load() {
+    if (!authed) return
     setLoading(true)
-    const r = await apiFetch('/api/admin/review', { credentials: 'include' })
-    if (r.status === 401) {
-      setAuthed(false)
-      setLoginMsg('登入狀態失效，請重新登入')
-      setLoading(false)
-      return
-    }
-    if (r.ok) {
-      const j = await r.json()
+    try {
+      const qs = status === 'all' ? '' : `?status=${status}`
+      const j = await apiFetch(`/api/admin/review${qs}`)
       setItems(j.items || [])
-    } else {
-      alert('未授權或伺服器錯誤')
+    } catch (e) {
+      console.error(e)
+      setItems([])
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   async function approve(id: string) {
-    const r = await apiFetch(`/api/admin/bookings/${id}/approve`, {
-      method: 'POST',
-      credentials: 'include'
-    })
-    if (r.status === 401) {
-      setAuthed(false); setLoginMsg('登入狀態失效，請重新登入'); return
-    }
-    if (r.ok) load()
-    else alert('核准失敗')
+    try {
+      await apiFetch(`/api/admin/bookings/${id}/approve`, { method: 'POST' })
+      load()
+    } catch (e) { alert('核准失敗'); console.error(e) }
   }
 
   async function reject(id: string) {
-    const r = await apiFetch(`/api/admin/bookings/${id}/reject`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ reason })
-    })
-    if (r.status === 401) {
-      setAuthed(false); setLoginMsg('登入狀態失效，請重新登入'); return
-    }
-    if (r.ok) { setReason(''); load() } else alert('退件失敗')
-  }
-
-  if (!authed) {
-    return (
-      <div className="max-w-md card">
-        <h2 className="mb-3 text-lg font-semibold">管理者登入</h2>
-        <div className="space-y-3">
-          <input
-            className="w-full rounded-xl2 border border-slate-300 px-3 py-2"
-            placeholder="帳號（ADMIN_USERS_JSON）"
-            value={user}
-            onChange={e => setUser(e.target.value)}
-          />
-          <input
-            type="password"
-            className="w-full rounded-xl2 border border-slate-300 px-3 py-2"
-            placeholder="密碼（明文，後端會比對 bcrypt 雜湊）"
-            value={pwd}
-            onChange={e => setPwd(e.target.value)}
-          />
-          <div className="flex items-center gap-2">
-            <button className="btn" onClick={login}><LogIn className="size-4" /> 登入</button>
-            <button
-              className="btn-ghost"
-              onClick={async () => {
-                setLoginMsg('檢查登入狀態中…')
-                const ok = await checkMe()
-                setLoginMsg(ok ? '已登入狀態（可直接進入）' : '尚未登入或 Cookie 未帶上')
-                if (ok) setAuthed(true)
-              }}
-            >
-              <AlertCircle className="size-4" /> 檢查登入狀態
-            </button>
-          </div>
-          {loginMsg && (
-            <pre className="whitespace-pre-wrap text-xs text-slate-600 bg-slate-50 p-3 rounded-lg border border-slate-200">
-{loginMsg}
-            </pre>
-          )}
-        </div>
-      </div>
-    )
+    const reason = prompt('請輸入退回原因（可留空）') ?? ''
+    try {
+      await apiFetch(`/api/admin/bookings/${id}/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+      })
+      load()
+    } catch (e) { alert('退回失敗'); console.error(e) }
   }
 
   return (
-    <div className="card">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-lg font-semibold">近 60 天申請</h2>
-        <button className="btn-ghost" onClick={load} disabled={loading}>
-          <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} /> 重新載入
-        </button>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="min-w-[720px] w-full text-sm">
-          <thead>
-            <tr className="text-left text-slate-500">
-              <th className="py-2">狀態</th>
-              <th className="py-2">開始 → 結束</th>
-              <th className="py-2">建立時間</th>
-              <th className="py-2">審核資訊</th>
-              <th className="py-2 text-right">操作</th>
-            </tr>
-          </thead>
-          <tbody className="align-top">
-            {items.map(x => (
-              <tr key={x.id} className="border-t">
-                <td className="py-2">{x.status}</td>
-                <td className="py-2">
-                  {new Date(x.start_ts).toLocaleString()} → {new Date(x.end_ts).toLocaleString()}
-                </td>
-                <td className="py-2">{new Date(x.created_at).toLocaleString()}</td>
-                <td className="py-2">
-                  {x.status !== 'pending'
-                    ? (
+    <div className="max-w-5xl mx-auto p-4 space-y-6">
+      <h2 className="text-2xl font-bold">管理審核</h2>
+
+      {!authed ? (
+        <form onSubmit={login} className="max-w-md space-y-3">
+          <input
+            placeholder="帳號"
+            value={username}
+            onChange={e => setUsername(e.target.value)}
+            className="w-full rounded-lg border px-3 py-2"
+          />
+          <input
+            type="password"
+            placeholder="密碼"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            className="w-full rounded-lg border px-3 py-2"
+          />
+          <button className="rounded-lg bg-blue-600 px-4 py-2 text-white">登入</button>
+          {loginMsg && <div className="text-rose-600 text-sm">{loginMsg}</div>}
+        </form>
+      ) : (
+        <>
+          <div className="flex items-center gap-3">
+            <select
+              value={status}
+              onChange={e => setStatus(e.target.value as any)}
+              className="rounded-lg border px-3 py-2"
+            >
+              <option value="all">全部（近60天）</option>
+              <option value="pending">待審</option>
+              <option value="approved">已核准</option>
+              <option value="rejected">已退回</option>
+            </select>
+            <button
+              onClick={load}
+              className="rounded-lg border px-4 py-2"
+              disabled={loading}
+            >
+              {loading ? '載入中…' : '重新整理'}
+            </button>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left border-b">
+                  <th className="py-2">狀態</th>
+                  <th className="py-2">時間</th>
+                  <th className="py-2">建立時間</th>
+                  <th className="py-2">申請人/分類/備註</th>
+                  <th className="py-2">操作</th>
+                </tr>
+              </thead>
+              <tbody className="align-top">
+                {items.map(x => (
+                  <tr key={x.id} className="border-b">
+                    <td className="py-2">{x.status}</td>
+                    <td className="py-2">
+                      {new Date(x.start_ts).toLocaleString()} → {new Date(x.end_ts).toLocaleString()}
+                    </td>
+                    <td className="py-2">{new Date(x.created_at).toLocaleString()}</td>
+                    <td className="py-2">
                       <div className="space-y-1">
-                        <div className={x.status === 'approved' ? 'text-emerald-600' : 'text-rose-600'}>
-                          {x.status === 'approved' ? '已核准' : '已退件'}
-                        </div>
-                        {x.reviewed_at && <div className="text-slate-500">於 {new Date(x.reviewed_at).toLocaleString()}</div>}
-                        {x.rejection_reason && <div className="text-slate-600">理由：{x.rejection_reason}</div>}
+                        {x.created_by && <div>申請人：{x.created_by}</div>}
+                        {x.category && <div>分類：{x.category}</div>}
+                        {x.note && <div className="text-slate-600">備註：{x.note}</div>}
+                        {x.status !== 'pending' && (
+                          <div className={x.status === 'approved' ? 'text-emerald-600' : 'text-rose-600'}>
+                            {x.status === 'approved'
+                              ? `已核准（${x.reviewed_by || ''} / ${x.reviewed_at ? new Date(x.reviewed_at).toLocaleString() : ''}）`
+                              : `已退回（${x.reviewed_by || ''} / ${x.reviewed_at ? new Date(x.reviewed_at).toLocaleString() : ''}）`}
+                            {x.rejection_reason ? `｜原因：${x.rejection_reason}` : ''}
+                          </div>
+                        )}
                       </div>
-                    )
-                    : <em className="text-slate-500">待審核</em>}
-                </td>
-                <td className="py-2 text-right">
-                  {x.status === 'pending' && (
-                    <div className="flex items-center justify-end gap-2">
-                      <button className="btn" onClick={() => approve(x.id)}>
-                        <CheckCircle2 className="size-4" /> 核准
-                      </button>
-                      <input
-                        className="w-48 rounded-xl2 border border-slate-300 px-3 py-2"
-                        placeholder="退件理由（可空）"
-                        value={reason}
-                        onChange={e => setReason(e.target.value)}
-                      />
-                      <button className="btn-ghost" onClick={() => reject(x.id)}>
-                        <XCircle className="size-4" /> 退件
-                      </button>
-                    </div>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {items.length === 0 && (
-              <tr>
-                <td colSpan={5} className="py-6 text-center text-slate-500">暫無資料</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+                    </td>
+                    <td className="py-2 space-x-2">
+                      {x.status === 'pending' && (
+                        <>
+                          <button onClick={() => approve(x.id)} className="rounded bg-emerald-600 px-3 py-1 text-white">核准</button>
+                          <button onClick={() => reject(x.id)} className="rounded bg-rose-600 px-3 py-1 text-white">退回</button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {items.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="py-6 text-center text-slate-500">暫無資料</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
     </div>
   )
 }
