@@ -177,8 +177,7 @@ export default function BookingPage() {
           throw new Error('該日不可申請或已過上限，請改選其他時間')
         }
         const payload: any = {
-          start: (adj as any).start.toISOString(), // ✅ 調整到可申請窗口內
-          venue,                                   // ✅ 後端必填
+          start: (adj as any).start.toISOString(), // ✅ 已調整到可申請窗口內
           created_by: applicant.trim(),
           note: fullNote,
           ...(category ? { category } : {})
@@ -199,7 +198,6 @@ export default function BookingPage() {
           if (it.start && it.end) {
             const payload: any = {
               start: it.start.toISOString(),       // ✅ 皆已經過調整/裁切判定
-              venue,                               // ✅ 後端必填
               created_by: applicant.trim(),
               note: fullNote,
               ...(category ? { category } : {})

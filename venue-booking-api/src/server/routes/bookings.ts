@@ -12,11 +12,9 @@ const pool = makePool()
 /* ============================== 共用設定 / 型別 ============================== */
 
 const AllowedCategories = ['教會聚會', '社團活動', '研習', '其他'] as const
-const AllowedVenues = ['大會堂', '康樂廳', '其它教室'] as const
 
 const createSchema = z.object({
   start: z.string().datetime(),
-  venue: z.enum(AllowedVenues), // ★ 場地必填
   category: z.string().trim().optional()
     .transform(v => (v && v.length ? v : undefined))
     .refine(v => !v || AllowedCategories.includes(v as any), { message: 'invalid_category' }),
@@ -42,7 +40,7 @@ function isSundayTPE(d: Date) {
   return new Date(`${tpeKey(d)}T12:00:00+08:00`).getUTCDay() === 0
 }
 
-/** session 依你的實作調整 */
+/** session 取用者資訊（依你的實作調整） */
 function getUserId(req: Request): string | null {
   return (req as any).session?.user?.id ?? null
 }
@@ -54,8 +52,8 @@ function isAdmin(req: Request): boolean {
 
 const DEMO_BOOKINGS = (process.env.DEMO_BOOKINGS ?? 'true').toLowerCase() === 'true'
 const DEMO_ITEMS = [
-  { id: 'demo-1', start_ts: '2025-09-28T10:00:00+08:00', end_ts: '2025-09-28T13:00:00+08:00', created_by: '系統示例', category: '教會聚會', note: '示例事件 A', venue: '大會堂' },
-  { id: 'demo-2', start_ts: '2025-09-30T19:00:00+08:00', end_ts: '2025-09-30T22:00:00+08:00', created_by: 'Alice', category: '研習', note: '示例事件 B', venue: '康樂廳' },
+  { id: 'demo-1', start_ts: '2025-09-28T10:00:00+08:00', end_ts: '2025-09-28T13:00:00+08:00', created_by: '系統示例', category: '教會聚會', note: '示例事件 A' },
+  { id: 'demo-2', start_ts: '2025-09-30T19:00:00+08:00', end_ts: '2025-09-30T22:00:00+08:00', created_by: 'Alice', category: '研習', note: '示例事件 B' },
 ]
 
 /* ============================== 建立預約 ============================== */
@@ -68,11 +66,11 @@ bookingsRouter.post('/', async (req, res) => {
   if (isNaN(startRaw.getTime())) return res.status(400).json({ error: 'invalid_start' })
   if (isSundayTPE(startRaw))     return res.status(400).json({ error: 'sunday_disabled' })
 
-  // 07:00 前自動上調
+  // 早於 07:00 → 上調至 07:00（不回 too_early）
   const earliest = earliestOfDayTPE(startRaw)
   const startEff = startRaw.getTime() < earliest.getTime() ? earliest : startRaw
 
-  // 3 小時上限 + 當日最晚裁切
+  // 3 小時上限 + 當日最晚結束
   const cap = latestCapTPE(startEff)
   const targetEnd = addHours(startEff, 3)
   const endEff = new Date(Math.min(targetEnd.getTime(), cap.getTime()))
@@ -81,7 +79,6 @@ bookingsRouter.post('/', async (req, res) => {
     return res.status(409).json({ error: 'too_late' })
   }
 
-  const venue = p.data.venue as (typeof AllowedVenues)[number]
   const category = (p.data.category as (typeof AllowedCategories)[number] | undefined) ?? undefined
   const note = p.data.note ?? undefined
   const created_by = p.data.created_by ?? undefined
@@ -94,7 +91,6 @@ bookingsRouter.post('/', async (req, res) => {
       truncated,
       persisted: false,
       status: 'pending',
-      venue,
       category: category ?? 'default',
       note: note ?? '',
       created_by: created_by ?? '',
@@ -105,23 +101,23 @@ bookingsRouter.post('/', async (req, res) => {
   try {
     const userId = getUserId(req)
     if (!userId) return res.status(401).json({ error: 'unauthorized' })
+
     const has = await c.query('SELECT 1 FROM terms_acceptances WHERE user_id=$1 LIMIT 1', [userId])
     if (has.rowCount === 0) return res.status(403).json({ error: 'must_accept_terms' })
 
     await c.query('BEGIN')
 
-    // ✅ 僅比對同場地、活躍狀態；✅ 半開 [)
+    // 前置查重：半開 [) + 僅比對活躍狀態
     const rangeMode = '[)'
     const ov = await c.query(
       `
-      SELECT id, start_ts, end_ts, venue
+      SELECT id, start_ts, end_ts
       FROM bookings
       WHERE status IN ('pending','approved')
-        AND venue = $3
-        AND tstzrange(start_ts, end_ts, $4) && tstzrange($1::timestamptz, $2::timestamptz, $4)
+        AND tstzrange(start_ts, end_ts, $3) && tstzrange($1::timestamptz, $2::timestamptz, $3)
       LIMIT 1
       `,
-      [startEff.toISOString(), endEff.toISOString(), venue, rangeMode]
+      [startEff.toISOString(), endEff.toISOString(), rangeMode]
     )
     if (ov.rows.length > 0) {
       await c.query('ROLLBACK')
@@ -132,10 +128,10 @@ bookingsRouter.post('/', async (req, res) => {
     const id = randomUUID()
     await c.query(
       `
-      INSERT INTO bookings (id, start_ts, end_ts, created_by, status, category, note, venue)
-      VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7)
+      INSERT INTO bookings (id, start_ts, end_ts, created_by, status, category, note)
+      VALUES ($1, $2, $3, $4, 'pending', $5, $6)
       `,
-      [id, startEff.toISOString(), endEff.toISOString(), created_by ?? userId ?? null, category ?? null, note ?? null, venue]
+      [id, startEff.toISOString(), endEff.toISOString(), created_by ?? userId ?? null, category ?? null, note ?? null]
     )
 
     await c.query('COMMIT')
@@ -146,17 +142,21 @@ bookingsRouter.post('/', async (req, res) => {
       truncated,
       persisted: true,
       status: 'pending',
-      venue,
       category: category ?? 'default',
       note: note ?? '',
       created_by: created_by ?? userId ?? '',
     })
   } catch (e: any) {
     await c.query('ROLLBACK')
+
+    // 👇 更穩健：遇到任意「排他約束衝突」都一律回 409 overlap
+    //   - e.code === '23P01' 是 Postgres exclusion constraint violation
+    //   - e.constraint 名稱可能是 no_overlap / bookings_no_overlap / 其它
     const name = (e?.constraint || '').toString()
     if (e?.code === '23P01' || /overlap/i.test(name)) {
       return res.status(409).json({ error: 'overlap' })
     }
+
     console.error('[bookings] insert failed', e)
     return res.status(500).json({ error: 'server_error' })
   } finally {
@@ -171,7 +171,7 @@ bookingsRouter.get('/', async (_req, res) => {
   const { rows } = await pool.query(
     `
     SELECT id, start_ts, end_ts, created_at, created_by, status,
-           reviewed_at, reviewed_by, rejection_reason, category, note, venue
+           reviewed_at, reviewed_by, rejection_reason, category, note
     FROM bookings
     ORDER BY start_ts ASC
     `
@@ -185,7 +185,7 @@ bookingsRouter.get('/approved', async (_req, res) => {
   if (!pool) return res.json({ items: DEMO_BOOKINGS ? DEMO_ITEMS : [] })
   const { rows } = await pool.query(
     `
-    SELECT id, start_ts, end_ts, created_by, category, note, venue
+    SELECT id, start_ts, end_ts, created_by, category, note
     FROM bookings
     WHERE status = 'approved'
     ORDER BY start_ts ASC
