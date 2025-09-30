@@ -3,9 +3,8 @@ import React, { useMemo, useState } from 'react'
 import SubmitWithTermsGate from '../web/components/SubmitWithTermsGate'
 import { apiFetch } from '../web/lib/api'
 
-// 分類：把「婚禮」改為「社團活動」，並保留「未分類」(空字串) 會使用行事曆 default 樣式
+// 分類：「婚禮」→「社團活動」，空字串代表未分類（行事曆用 default 樣式）
 type Category = '' | '教會聚會' | '社團活動' | '研習' | '其他'
-// 場地：必填
 type Venue = '大會堂' | '康樂廳' | '其它教室'
 type Mode = 'single' | 'repeat'
 
@@ -26,11 +25,14 @@ function parseTimeToDate(baseDate: Date, hhmm: string) {
   const d = new Date(baseDate); d.setHours(hh ?? 0, mm ?? 0, 0, 0)
   return d
 }
-function latestEndCap(d: Date) {
-  const wd = d.getDay()
-  const cap = new Date(d)
-  if (wd === 1 || wd === 3) cap.setHours(18, 0, 0, 0)   // 週一/週三最晚 18:00
-  else cap.setHours(21, 30, 0, 0)                       // 其他日最晚 21:30
+function latestEnd(d: Date) {
+  // 週一 / 週三 最晚 18:00；其餘 21:30
+  const day = d.getDay()
+  return day === 1 || day === 3 ? { hour: 18, minute: 0 } : { hour: 21, minute: 30 }
+}
+function capOfDay(d: Date) {
+  const { hour, minute } = latestEnd(d)
+  const cap = new Date(d); cap.setHours(hour, minute, 0, 0)
   return cap
 }
 function isSunday(d: Date) { return d.getDay() === 0 }
@@ -44,7 +46,7 @@ export default function BookingPage() {
     // 取下個 30 分鐘刻度
     rounded.setMinutes(m < 30 ? 30 : 0, 0, 0)
     if (m >= 30) rounded.setHours(n.getHours() + 1)
-    // 最早 07:00
+    // 每日最早 07:00
     if (rounded.getHours() < 7) rounded.setHours(7, 0, 0, 0)
     return rounded
   }, [])
@@ -55,24 +57,25 @@ export default function BookingPage() {
   // 單日
   const [startStr, setStartStr] = useState(fmtLocal(now))
   const start = parseLocal(startStr) || now
+  const cap = capOfDay(start)                                        // ⬅ 當日上限時間
+  const maxStart = new Date(cap.getTime() - 60_000)                  // ⬅ 上限前 1 分鐘
 
   // 重複
   const [rangeStart, setRangeStart] = useState(fmtDate(now))
   const [rangeEnd, setRangeEnd] = useState(fmtDate(addHours(now, 24*13))) // 預設 2 週內
-  const [repeatTime, setRepeatTime] = useState('07:00') // 時段起始（每天同一時間）
-  const [repeatWds, setRepeatWds] = useState<{[k in 1|2|3|4|5|6]: boolean}>({1:true,2:true,3:true,4:true,5:true,6:false}) // 週一~週六
-  // 週日禁用，不提供 0
+  const [repeatTime, setRepeatTime] = useState('07:00')
+  const [repeatWds, setRepeatWds] = useState<{[k in 1|2|3|4|5|6]: boolean}>({1:true,2:true,3:true,4:true,5:true,6:false})
 
   // 共用（結束時間以 3 小時為基準並受晚間上限裁切）
   const end = useMemo(() => {
     const base = mode === 'single' ? (parseLocal(startStr) || now) : parseTimeToDate(new Date(rangeStart), repeatTime)
     const target = addHours(base, 3)
-    const cap = latestEndCap(base)
+    const cap = capOfDay(base)
     return new Date(Math.min(target.getTime(), cap.getTime()))
   }, [mode, startStr, rangeStart, repeatTime])
 
-  // 必填欄位
-  const [applicant, setApplicant] = useState('') // 申請者姓名（→ created_by）
+  // 必填
+  const [applicant, setApplicant] = useState('')
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
   const [venue, setVenue] = useState<Venue>('大會堂')
@@ -90,8 +93,12 @@ export default function BookingPage() {
     if (!s) return '請選擇開始日期時間'
     if (isSunday(s)) return '週日不可申請'
     if (s.getHours() < 7) return '每日最早 07:00'
-    const cap = latestEndCap(s)
-    if (s.getTime() >= cap.getTime()) return `當日最晚 ${cap.getHours().toString().padStart(2,'0')}:${cap.getMinutes().toString().padStart(2,'0')} 前開始`
+    const cap = capOfDay(s)
+    if (s.getTime() >= cap.getTime()) {
+      const hh = String(cap.getHours()).padStart(2,'0')
+      const mm = String(cap.getMinutes()).padStart(2,'0')
+      return `開始時間需早於當日上限 ${hh}:${mm}`
+    }
     return null
   }
   function validateRepeat(): string | null {
@@ -119,24 +126,19 @@ export default function BookingPage() {
     setSubmitting(true)
     setResultMsg('')
     try {
-      // 共同 note：把聯絡資訊與場地寫入 note（後端會一起保存）
-      const header = `[場地:${venue}] [姓名:${applicant}] [Email:${email}] [電話:${phone}]`
-      const fullNote = header + (note.trim() ? ` ${note.trim()}` : '')
-
       const commonErr = validateCommon()
       if (commonErr) throw new Error(commonErr)
+
+      // 將聯絡資訊與場地打包寫進 note（後端無需改 schema 也能保存）
+      const header = `[場地:${venue}] [姓名:${applicant}] [Email:${email}] [電話:${phone}]`
+      const fullNote = header + (note.trim() ? ` ${note.trim()}` : '')
 
       if (mode === 'single') {
         const err = validateSingle()
         if (err) throw new Error(err)
         const s = parseLocal(startStr)!
-        const cap = latestEndCap(s)
-        const end3h = addHours(s, 3)
-        const finalStart = s
-        const finalEnd = new Date(Math.min(end3h.getTime(), cap.getTime()))
-        // 前端只送 start；後端會套 3h 和上限（這裡僅做前端檢查/提示）
         const payload: any = {
-          start: finalStart.toISOString(),
+          start: s.toISOString(),
           created_by: applicant.trim(),
           note: fullNote,
         }
@@ -150,17 +152,15 @@ export default function BookingPage() {
       } else {
         const err = validateRepeat()
         if (err) throw new Error(err)
-        // 逐日建立（跳過週日；只取所選星期）
         const rs = new Date(rangeStart + 'T00:00:00')
         const re = new Date(rangeEnd   + 'T23:59:59')
         let cur = new Date(rs)
         let count = 0
-
         while (cur <= re) {
           const wd = cur.getDay() as 0|1|2|3|4|5|6
           if (wd !== 0 && repeatWds[wd as 1|2|3|4|5|6]) {
             const s = parseTimeToDate(cur, repeatTime)
-            const cap = latestEndCap(s)
+            const cap = capOfDay(s)
             if (s.getHours() >= 7 && s.getTime() < cap.getTime()) {
               const payload: any = {
                 start: s.toISOString(),
@@ -168,7 +168,6 @@ export default function BookingPage() {
                 note: fullNote,
               }
               if (category) payload.category = category
-              // 逐筆送出（避免一次爆掉）；若要更快可改為 Promise.all，但失敗比較難提示
               await apiFetch('/api/bookings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -189,6 +188,8 @@ export default function BookingPage() {
       setSubmitting(false)
     }
   }
+
+  const singleErr = mode === 'single' ? validateSingle() : null
 
   return (
     <div className="max-w-3xl mx-auto p-4 space-y-6">
@@ -234,14 +235,18 @@ export default function BookingPage() {
       {mode === 'single' ? (
         <div className="grid md:grid-cols-2 gap-4">
           <label className="flex flex-col gap-1">
-            <span className="text-sm text-slate-600">開始時間（最早 07:00；週日禁用）</span>
+            <span className="text-sm text-slate-600">
+              開始時間（最早 07:00；週日禁用；當日上限：{String(cap.getHours()).padStart(2,'0')}:{String(cap.getMinutes()).padStart(2,'0')} 之前）
+            </span>
             <input
               type="datetime-local"
               value={startStr}
               onChange={e => setStartStr(e.target.value)}
               className="rounded-lg border px-3 py-2"
-              min={`${fmtDate(new Date())}T07:00`}
+              min={`${fmtDate(start)}T07:00`}
+              max={fmtLocal(maxStart)}                        // ⬅ 動態最大值：上限前 1 分鐘
             />
+            {singleErr && <div className="text-sm text-rose-600">{singleErr}</div>}
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-sm text-slate-600">結束時間（唯讀，最多 3 小時且受晚間上限）</span>
