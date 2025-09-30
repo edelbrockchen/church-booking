@@ -12,7 +12,7 @@ const pool = makePool()
 /* --------------------------- 共用設定 / 型別 --------------------------- */
 
 // 可接受的分類（也可放寬為任意字串）
-const AllowedCategories = ['教會聚會', '婚禮', '研習', '其他'] as const
+const AllowedCategories = ['教會聚會', '社團活動', '研習', '其他'] as const
 
 const createSchema = z.object({
   start: z.string().datetime(),

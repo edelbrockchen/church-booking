@@ -88,7 +88,7 @@ function splitByDay(item: ApprovedItem): DayPiece[] {
 const CATEGORY_STYLE: Record<string, { chip: string; dot: string; pill: string }> = {
   default:  { chip: 'bg-brand-100 text-brand-700', dot: 'bg-brand-600',  pill: 'bg-brand-600 text-white' },
   教會聚會: { chip: 'bg-emerald-100 text-emerald-700', dot: 'bg-emerald-600', pill: 'bg-emerald-600 text-white' },
-  婚禮:     { chip: 'bg-rose-100 text-rose-700',       dot: 'bg-rose-600',    pill: 'bg-rose-600 text-white' },
+  社團活動: { chip: 'bg-rose-100 text-rose-700',       dot: 'bg-rose-600',    pill: 'bg-rose-600 text-white' },
   研習:     { chip: 'bg-indigo-100 text-indigo-700',   dot: 'bg-indigo-600',  pill: 'bg-indigo-600 text-white' },
   其他:     { chip: 'bg-amber-100 text-amber-700',     dot: 'bg-amber-600',   pill: 'bg-amber-600 text-white' }
 }
