@@ -57,8 +57,8 @@ export default function BookingPage() {
   // 單日
   const [startStr, setStartStr] = useState(fmtLocal(now))
   const start = parseLocal(startStr) || now
-  const cap = capOfDay(start)                                        // ⬅ 當日上限時間
-  const maxStart = new Date(cap.getTime() - 60_000)                  // ⬅ 上限前 1 分鐘
+  const dayCap = capOfDay(start)                                     // 當日上限時間
+  const maxStart = addHours(dayCap, -3)                               // ★ 上限 - 3 小時（關鍵）
 
   // 重複
   const [rangeStart, setRangeStart] = useState(fmtDate(now))
@@ -94,10 +94,11 @@ export default function BookingPage() {
     if (isSunday(s)) return '週日不可申請'
     if (s.getHours() < 7) return '每日最早 07:00'
     const cap = capOfDay(s)
-    if (s.getTime() >= cap.getTime()) {
-      const hh = String(cap.getHours()).padStart(2,'0')
-      const mm = String(cap.getMinutes()).padStart(2,'0')
-      return `開始時間需早於當日上限 ${hh}:${mm}`
+    const latestStart = addHours(cap, -3)
+    if (s.getTime() > latestStart.getTime()) {
+      const hh = String(latestStart.getHours()).padStart(2,'0')
+      const mm = String(latestStart.getMinutes()).padStart(2,'0')
+      return `開始時間需早於或等於 ${hh}:${mm}（需容納 3 小時）`
     }
     return null
   }
@@ -161,7 +162,9 @@ export default function BookingPage() {
           if (wd !== 0 && repeatWds[wd as 1|2|3|4|5|6]) {
             const s = parseTimeToDate(cur, repeatTime)
             const cap = capOfDay(s)
-            if (s.getHours() >= 7 && s.getTime() < cap.getTime()) {
+            const latestStart = addHours(cap, -3)
+            // 必須：>= 07:00、< cap 並且 s + 3h <= cap（等價於 s <= cap - 3h）
+            if (s.getHours() >= 7 && s.getTime() <= latestStart.getTime()) {
               const payload: any = {
                 start: s.toISOString(),
                 created_by: applicant.trim(),
@@ -236,7 +239,7 @@ export default function BookingPage() {
         <div className="grid md:grid-cols-2 gap-4">
           <label className="flex flex-col gap-1">
             <span className="text-sm text-slate-600">
-              開始時間（最早 07:00；週日禁用；當日上限：{String(cap.getHours()).padStart(2,'0')}:{String(cap.getMinutes()).padStart(2,'0')} 之前）
+              開始時間（最早 07:00；週日禁用；當日最晚開始：{String(addHours(dayCap,-3).getHours()).padStart(2,'0')}:{String(addHours(dayCap,-3).getMinutes()).padStart(2,'0')}）
             </span>
             <input
               type="datetime-local"
@@ -244,7 +247,7 @@ export default function BookingPage() {
               onChange={e => setStartStr(e.target.value)}
               className="rounded-lg border px-3 py-2"
               min={`${fmtDate(start)}T07:00`}
-              max={fmtLocal(maxStart)}                        // ⬅ 動態最大值：上限前 1 分鐘
+              max={fmtLocal(maxStart)}                        // ★ 上限前 3 小時
             />
             {singleErr && <div className="text-sm text-rose-600">{singleErr}</div>}
           </label>
