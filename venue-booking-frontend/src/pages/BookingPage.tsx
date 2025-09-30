@@ -83,7 +83,7 @@ export default function BookingPage() {
 
   // 其他設定
   const [category, setCategory] = useState<Category>('') // 空字串＝未分類
-  const [reason, setReason] = useState('')               // 申請原因（原「備註」）
+  const [reason, setReason] = useState('')               // 申請原因（改為必填）
 
   /* ---------------- 單日模式 ---------------- */
   const [startStr, setStartStr] = useState(fmtLocal(now))
@@ -138,6 +138,7 @@ export default function BookingPage() {
     if (!email.trim()) return '請填寫電子郵件'
     if (!phone.trim()) return '請填寫聯絡電話'
     if (!venue) return '請選擇場地'
+    if (!reason.trim()) return '請填寫申請原因'
     return null
   }
   function validateSingle(): string | null {
@@ -177,8 +178,8 @@ export default function BookingPage() {
           throw new Error('該日不可申請或已過上限，請改選其他時間')
         }
         const payload: any = {
-          start: (adj as any).start.toISOString(), // ✅ 已調整到可申請窗口內
-          venue,                                   // ✅ 後端必填
+          start: (adj as any).start.toISOString(),
+          venue,
           created_by: applicant.trim(),
           note: fullNote,
           ...(category ? { category } : {})
@@ -189,7 +190,6 @@ export default function BookingPage() {
           body: JSON.stringify(payload)
         })
         setResultMsg('已送出 1 筆申請，等待管理者審核')
-
       } else {
         const err = validateRepeat()
         if (err) throw new Error(err)
@@ -198,8 +198,8 @@ export default function BookingPage() {
         for (const it of repeatPreview) {
           if (it.start && it.end) {
             const payload: any = {
-              start: it.start.toISOString(), // ✅ 皆已經過調整/裁切判定
-              venue,                         // ✅ 後端必填
+              start: it.start.toISOString(),
+              venue,
               created_by: applicant.trim(),
               note: fullNote,
               ...(category ? { category } : {})
@@ -215,7 +215,6 @@ export default function BookingPage() {
         setResultMsg(`已送出 ${count} 筆重複日期申請，等待管理者審核`)
       }
     } catch (e: any) {
-      // 友善錯誤訊息：嘗試把 "[409] {...}" 解析出 JSON
       let msg = e?.message || 'unknown'
       try {
         const jsonStr = msg.replace(/^.*?\{/, '{')
@@ -319,7 +318,37 @@ export default function BookingPage() {
         </div>
       </div>
 
-      {/* 日期與時間 */}
+      {/* 其他設定（移到前面；申請原因改為必填） */}
+      <div className="rounded-xl border p-4 space-y-4">
+        <h3 className="font-semibold">其他設定</h3>
+        <div className="grid md:grid-cols-2 gap-4">
+          <label className="flex flex-col gap-1">
+            <span className="text-sm text-slate-600">分類（可不選＝未分類）</span>
+            <select value={category} onChange={e=>setCategory(e.target.value as Category)} className="rounded-lg border px-3 py-2">
+              <option value="">（未分類）</option>
+              <option value="教會聚會">教會聚會</option>
+              <option value="社團活動">社團活動</option>
+              <option value="研習">研習</option>
+              <option value="其他">其他</option>
+            </select>
+          </label>
+
+          <label className="md:col-span-2 flex flex-col gap-1">
+            <span className="text-sm text-slate-600">申請原因 <span className="text-rose-600">*</span>（最多 200 字）</span>
+            <textarea
+              value={reason}
+              onChange={e=>setReason(e.target.value)}
+              rows={4}
+              maxLength={200}
+              placeholder="請敘明活動內容、需求等"
+              className="rounded-lg border px-3 py-2"
+              required
+            />
+          </label>
+        </div>
+      </div>
+
+      {/* 日期與時間（移到後面） */}
       <div className="rounded-xl border p-4 space-y-4">
         <h3 className="font-semibold">日期與時間</h3>
 
@@ -359,25 +388,12 @@ export default function BookingPage() {
                 <input type="date" value={rangeEnd} onChange={e=>setRangeEnd(e.target.value)} className="rounded-lg border px-3 py-2" />
               </label>
               <label className="flex flex-col gap-1">
-                <span className="text-sm text-slate-600">每天開始時間（以台北時間計，最早 07:00）</span>
+                <span className="text-sm text-slate-600">每天開始時間</span>
                 <input type="time" value={repeatTime} onChange={e=>setRepeatTime(e.target.value)} className="rounded-lg border px-3 py-2" />
               </label>
             </div>
-
-            {/* 每週選擇（週日固定禁用） */}
-            <div className="text-sm text-slate-600 mb-1">選擇星期（週日禁用）</div>
-            <div className="flex flex-wrap gap-3 mb-2">
-              {[1,2,3,4,5,6].map(wd => (
-                <label key={wd} className="inline-flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={repeatWds[wd as 1|2|3|4|5|6]}
-                    onChange={e=>setRepeatWds(s=>({...s, [wd]: e.target.checked}))}
-                  />
-                  {['','週一','週二','週三','週四','週五','週六'][wd]}
-                </label>
-              ))}
-            </div>
+            {/* 將冗長備註移出欄位，避免擠壓版面 */}
+            <div className="text-xs text-slate-500">每天開始時間以台北時間計，最早 07:00。</div>
 
             {/* 重複日期預覽（以台北時間判斷有效性/裁切） */}
             <div className="space-y-2">
@@ -418,33 +434,6 @@ export default function BookingPage() {
             {validateRepeat() && <div className="text-sm text-rose-600">{validateRepeat()}</div>}
           </>
         )}
-      </div>
-
-      {/* 其他設定 */}
-      <div className="rounded-xl border p-4 space-y-4">
-        <h3 className="font-semibold">其他設定</h3>
-        <div className="grid md:grid-cols-2 gap-4">
-          <label className="flex flex-col gap-1">
-            <span className="text-sm text-slate-600">分類（可不選＝未分類）</span>
-            <select value={category} onChange={e=>setCategory(e.target.value as Category)} className="rounded-lg border px-3 py-2">
-              <option value="">（未分類）</option>
-              <option value="教會聚會">教會聚會</option>
-              <option value="社團活動">社團活動</option>
-              <option value="研習">研習</option>
-              <option value="其他">其他</option>
-            </select>
-          </label>
-
-          <label className="md:col-span-2 flex flex-col gap-1">
-            <span className="text-sm text-slate-600">申請原因（最多 200 字，可選填）</span>
-            <textarea
-              value={reason}
-              onChange={e=>setReason(e.target.value)}
-              rows={4}
-              className="rounded-lg border px-3 py-2"
-            />
-          </label>
-        </div>
       </div>
 
       {/* 送出 */}
