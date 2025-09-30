@@ -11,34 +11,12 @@ const pool = makePool()
 
 /* --------------------------- 共用設定 / 型別 --------------------------- */
 
-// 可接受的分類
+// 可接受的分類（前端「婚禮」已改為「社團活動」）
 const AllowedCategories = ['教會聚會', '社團活動', '研習', '其他'] as const
 
-// 以台北時間 (UTC+8) 做日界線與上限判斷（避免受伺服器時區影響）
-const TAIPEI_OFFSET_MS = 8 * 60 * 60 * 1000
-function toTaipei(d: Date): Date { return new Date(d.getTime() + TAIPEI_OFFSET_MS) }
-function fromTaipei(d: Date): Date { return new Date(d.getTime() - TAIPEI_OFFSET_MS) }
-function taipeiDay(d: Date): number { return toTaipei(d).getDay() }            // 0=週日
-function taipeiHour(d: Date): number { return toTaipei(d).getHours() }
-function isSunday(d: Date) { return taipeiDay(d) === 0 }
-
-// 依台北時間求「當日最晚結束時間（cap）」：週一/週三 18:00，其餘 21:30
-function latestCap(d: Date): Date {
-  const local = toTaipei(d)
-  const day = local.getDay()
-  const capLocal = new Date(local)
-  if (day === 1 || day === 3) capLocal.setHours(18, 0, 0, 0)     // 週一、週三 18:00
-  else capLocal.setHours(21, 30, 0, 0)                            // 其他日 21:30
-  return fromTaipei(capLocal)                                     // 回到 UTC 時間基準
-}
-
 const createSchema = z.object({
-  start: z.string().datetime(),                  // ISO 字串
-  // 下列皆為選填；若前端沒傳，後端也會給預設值
-  category: z
-    .string()
-    .trim()
-    .optional()
+  start: z.string().datetime(),               // ISO 字串（含時區）
+  category: z.string().trim().optional()
     .transform(v => (v && v.length ? v : undefined))
     .refine(v => !v || AllowedCategories.includes(v as any), { message: 'invalid_category' }),
   note: z.string().trim().max(200).optional(),
@@ -46,6 +24,26 @@ const createSchema = z.object({
 })
 
 function addHours(d: Date, h: number) { return new Date(d.getTime() + h * 3600_000) }
+
+/** ------- 台北時間工具（不靠機器時區；用 +08:00 明確建構） ------- */
+function tpeDateKey(d: Date) {
+  // 該瞬間在台北的 YYYY-MM-DD
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit' })
+  return fmt.format(d)
+}
+function earliestOfDayTPE(d: Date) {
+  // 台北當天 07:00 對應的絕對時間
+  return new Date(`${tpeDateKey(d)}T07:00:00+08:00`)
+}
+function latestCapTPE(d: Date) {
+  // 台北：週一/週三 最晚 18:00；其餘 21:30
+  const dow = new Date(`${tpeDateKey(d)}T12:00:00+08:00`).getUTCDay()
+  const hhmm = (dow === 1 || dow === 3) ? '18:00:00' : '21:30:00'
+  return new Date(`${tpeDateKey(d)}T${hhmm}+08:00`)
+}
+function isSundayTPE(d: Date) {
+  return new Date(`${tpeDateKey(d)}T12:00:00+08:00`).getUTCDay() === 0
+}
 
 // 依你實際的 session 結構調整
 function getUserId(req: Request): string | null {
@@ -61,7 +59,6 @@ const DEMO_BOOKINGS = (process.env.DEMO_BOOKINGS ?? 'true').toLowerCase() === 't
 const DEMO_ITEMS = [
   {
     id: 'demo-1',
-    // 2025-09-28 10:00–13:00（台北時間）
     start_ts: '2025-09-28T10:00:00+08:00',
     end_ts:   '2025-09-28T13:00:00+08:00',
     created_by: '系統示例',
@@ -70,7 +67,6 @@ const DEMO_ITEMS = [
   },
   {
     id: 'demo-2',
-    // 2025-09-30 19:00–22:00（台北時間）
     start_ts: '2025-09-30T19:00:00+08:00',
     end_ts:   '2025-09-30T22:00:00+08:00',
     created_by: 'Alice',
@@ -82,38 +78,32 @@ const DEMO_ITEMS = [
 /* --------------------------- 建立預約 --------------------------- */
 
 bookingsRouter.post('/', async (req, res) => {
-  // 🔎 debug：觀察 session 使用者
   console.log('[bookings][POST /] userId =', getUserId(req))
 
   const p = createSchema.safeParse(req.body)
-  if (!p.success) return res.status(400).json({ error: 'invalid_payload', details: p.error.issues })
-
-  // 解析開始時間（ISO）
-  const start = new Date(p.data.start)
-  if (isNaN(start.getTime())) return res.status(400).json({ error: 'invalid_start' })
-
-  // 週日禁用（以台北時間判斷）
-  if (isSunday(start)) return res.status(409).json({ error: 'sunday_disabled' })
-
-  // 每日最早 07:00（以台北時間判斷）
-  if (taipeiHour(start) < 7) return res.status(409).json({ error: 'too_early' })
-
-  // 當日最晚結束時間（以台北時間）
-  const cap = latestCap(start)
-
-  // 「最晚可開始」= cap - 3h；允許剛好等於邊界
-  const latestStart = addHours(cap, -3)
-  if (start.getTime() > latestStart.getTime()) {
-    return res.status(409).json({ error: 'too_late' })
+  if (!p.success) {
+    return res.status(400).json({ error: 'invalid_payload', details: p.error.issues })
   }
 
-  // 預設 3 小時；若超過上限就截斷
-  const targetEnd = addHours(start, 3)
-  const end = targetEnd.getTime() > cap.getTime() ? cap : targetEnd
-  const truncated = end.getTime() < targetEnd.getTime()
+  // 來自前端的開始時間（ISO，含時區）
+  const startRaw = new Date(p.data.start)
+  if (isNaN(startRaw.getTime())) return res.status(400).json({ error: 'invalid_start' })
 
-  if (end.getTime() <= start.getTime()) {
-    // 若被截短到不合理（例如太晚起始），直接拒絕
+  // 週日禁用（以台北時間判斷）
+  if (isSundayTPE(startRaw)) return res.status(400).json({ error: 'sunday_disabled' })
+
+  // ★ 關鍵：若早於當天台北 07:00，直接「上調」到 07:00；不再回 too_early
+  const earliest = earliestOfDayTPE(startRaw)
+  const startEff = startRaw.getTime() < earliest.getTime() ? earliest : startRaw
+
+  // 3 小時上限 + 當日最晚結束（台北）
+  const cap = latestCapTPE(startEff)
+  const targetEnd = addHours(startEff, 3)
+  const endEff = new Date(Math.min(targetEnd.getTime(), cap.getTime()))
+  const truncated = endEff.getTime() < targetEnd.getTime()
+
+  // 若整個窗口都塞不下任何時間（例如當天已經超過上限），回 too_late
+  if (endEff.getTime() <= startEff.getTime()) {
     return res.status(409).json({ error: 'too_late' })
   }
 
@@ -121,12 +111,12 @@ bookingsRouter.post('/', async (req, res) => {
   const note = p.data.note ?? undefined
   const created_by = p.data.created_by ?? undefined
 
-  // 無 DB 的 demo 回覆
+  // 無 DB（本地測試）就回 demo 結果
   if (!pool) {
     return res.status(201).json({
       id: 'demo-' + Math.random().toString(36).slice(2),
-      start: start.toISOString(),
-      end: end.toISOString(),
+      start: startEff.toISOString(),
+      end: endEff.toISOString(),
       truncated,
       persisted: false,
       status: 'pending',
@@ -138,7 +128,7 @@ bookingsRouter.post('/', async (req, res) => {
 
   const c = await pool.connect()
   try {
-    // ✅ 最終把關：必須先同意借用規範
+    // ✅ 必須先同意借用規範
     const userId = getUserId(req)
     if (!userId) return res.status(401).json({ error: 'unauthorized' })
 
@@ -147,7 +137,7 @@ bookingsRouter.post('/', async (req, res) => {
 
     await c.query('BEGIN')
 
-    // 檢查重疊 —— 與 DB constraint 一致，皆採 '[]'
+    // 檢查重疊（與 DB constraint 一致）
     const rangeMode = '[]'
     const overlap = await c.query(
       `
@@ -155,7 +145,7 @@ bookingsRouter.post('/', async (req, res) => {
       WHERE tstzrange(start_ts, end_ts, $3) && tstzrange($1::timestamptz, $2::timestamptz, $3)
       LIMIT 1
       `,
-      [start.toISOString(), end.toISOString(), rangeMode]
+      [startEff.toISOString(), endEff.toISOString(), rangeMode]
     )
     if (overlap.rows.length > 0) {
       await c.query('ROLLBACK')
@@ -163,21 +153,29 @@ bookingsRouter.post('/', async (req, res) => {
     }
 
     const id = randomUUID()
-    console.log('[bookings] inserting', { id, start: start.toISOString(), end: end.toISOString(), userId, category, note })
+    console.log('[bookings] inserting', {
+      id,
+      start: startEff.toISOString(),
+      end: endEff.toISOString(),
+      userId,
+      category,
+      note,
+      created_by
+    })
 
     await c.query(
       `
       INSERT INTO bookings (id, start_ts, end_ts, created_by, status, category, note)
       VALUES ($1, $2, $3, $4, 'pending', $5, $6)
       `,
-      [id, start.toISOString(), end.toISOString(), created_by ?? userId ?? null, category ?? null, note ?? null]
+      [id, startEff.toISOString(), endEff.toISOString(), created_by ?? userId ?? null, category ?? null, note ?? null]
     )
 
     await c.query('COMMIT')
     return res.status(201).json({
       id,
-      start: start.toISOString(),
-      end: end.toISOString(),
+      start: startEff.toISOString(),
+      end: endEff.toISOString(),
       truncated,
       persisted: true,
       status: 'pending',
@@ -187,12 +185,9 @@ bookingsRouter.post('/', async (req, res) => {
     })
   } catch (e: any) {
     await c.query('ROLLBACK')
-
-    // 與 SQL 約束名稱一致
     if (e?.constraint === 'bookings_no_overlap') {
       return res.status(409).json({ error: 'overlap' })
     }
-
     console.error('[bookings] insert failed', e)
     return res.status(500).json({ error: 'server_error' })
   } finally {
@@ -219,10 +214,8 @@ bookingsRouter.get('/', async (_req, res) => {
 
 bookingsRouter.get('/approved', async (_req, res) => {
   if (!pool) {
-    // 沒有 DB：若開啟 demo，就給示例；否則空陣列
     return res.json({ items: DEMO_BOOKINGS ? DEMO_ITEMS : [] })
   }
-
   const { rows } = await pool.query(
     `
     SELECT id, start_ts, end_ts, created_by, category, note
@@ -231,21 +224,14 @@ bookingsRouter.get('/approved', async (_req, res) => {
     ORDER BY start_ts ASC
     `
   )
-
   if (rows.length === 0 && DEMO_BOOKINGS) {
-    // 有 DB 但目前沒有已核准，且開啟 demo → 回示例，前端先能看到畫面
     return res.json({ items: DEMO_ITEMS })
   }
-
   res.json({ items: rows })
 })
 
 /* --------------------------- 取消預約 --------------------------- */
-/**
- * ✅ 取消預約：本人或管理員可取消
- * POST /api/bookings/:id/cancel
- * 回傳：{ ok: true } 或相對應錯誤碼
- */
+
 bookingsRouter.post('/:id/cancel', async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'db_unavailable' })
 
@@ -256,7 +242,6 @@ bookingsRouter.post('/:id/cancel', async (req, res) => {
   const c = await pool.connect()
   try {
     await c.query('BEGIN')
-
     const f = await c.query(
       `SELECT id, created_by, status FROM bookings WHERE id=$1 LIMIT 1`,
       [id]
@@ -267,7 +252,6 @@ bookingsRouter.post('/:id/cancel', async (req, res) => {
     }
     const b = f.rows[0] as { id: string; created_by: string | null; status: string }
 
-    // 僅允許 pending / approved 轉 cancelled
     if (!['pending', 'approved'].includes(b.status)) {
       await c.query('ROLLBACK')
       return res.status(409).json({ error: 'invalid_status' })
