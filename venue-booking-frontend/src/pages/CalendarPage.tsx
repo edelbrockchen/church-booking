@@ -1,412 +1,212 @@
+// src/pages/CalendarPage.tsx
 import React, { useEffect, useMemo, useState } from 'react'
+import { apiFetch } from '../web/lib/api'
 
-/** 從 props 接 apiBase，沒有則回退到環境變數（本地可為空字串→走 Vite 代理） */
-type Props = { apiBase?: string }
-
-const ENV_API_BASE = import.meta.env.VITE_API_BASE_URL || ''
-
-/** 後端回傳格式（保持相容：category / note 可能不存在） */
-type ApprovedItem = {
+type Booking = {
   id: string
   start_ts: string
   end_ts: string
-  created_by?: string | null
-  category?: string | null
   note?: string | null
-}
-
-/** 內部切片後顯示用 */
-type DayPiece = {
-  id: string
-  dayKey: string           // YYYY-MM-DD（本地時區）
-  start: Date
-  end: Date
-  created_by?: string | null
   category?: string | null
-  note?: string | null
+  venue?: '大會堂' | '康樂廳' | '其它教室' | null
 }
 
-type MonthKey = { y: number; m: number } // m: 0-11
-type ViewMode = 'month' | 'week' | 'day'
+const TZ = 'Asia/Taipei'
 
-/* ====== 小工具 ====== */
-function fmtTime(d: Date) { return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
-
-/** 以「本地時區」產 YYYY-MM-DD（避免 toISOString 造成 UTC 偏移） */
-function ymdLocal(d: Date) {
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${dd}`
+/** 以台北時間格式化 HH:mm */
+function fmtHHmmTPE(d: Date) {
+  return new Intl.DateTimeFormat('zh-TW', {
+    timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(d)
 }
 
-function startOfWeek(d: Date) {
-  const x = new Date(d)
-  const wd = x.getDay() // 0(日)~6(六) 本地
-  x.setDate(x.getDate() - wd)
-  x.setHours(0, 0, 0, 0)
-  return x
-}
-function addDays(d: Date, n: number) { const x = new Date(d); x.setDate(x.getDate()+n); return x }
-
-/** 產生月曆 6 週（像 Google Calendar） */
-function buildMonthGrid(key: MonthKey) {
-  const first = new Date(key.y, key.m, 1)
-  const gridStart = startOfWeek(first) // 以週日為首
-  const days: Date[] = []
-  for (let i = 0; i < 42; i++) days.push(addDays(gridStart, i))
-  return days
+/** 將日期轉為「台北」的 YYYY-MM-DD key */
+function tpeDateKey(d: Date) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(d) // e.g. 2025-10-01
 }
 
-/** 把跨日事件切成以「日」為單位的片段，方便塞進日格（本地時區） */
-function splitByDay(item: ApprovedItem): DayPiece[] {
-  const s = new Date(item.start_ts)
-  const e = new Date(item.end_ts)
-  const out: DayPiece[] = []
-  if (isNaN(s.getTime()) || isNaN(e.getTime()) || e <= s) return out
+/** 台北時區的當月資訊（欄位：year, month, key=YYYY-MM, monthName） */
+function tpeMonthInfo(pivot: Date) {
+  const y = Number(new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric' }).format(pivot))
+  const m = Number(new Intl.DateTimeFormat('en-CA', { timeZone: TZ, month: '2-digit' }).format(pivot))
+  const ym = `${y}-${String(m).padStart(2, '0')}`
+  const monthName = new Intl.DateTimeFormat('zh-TW', { timeZone: TZ, year: 'numeric', month: 'long' }).format(pivot)
+  return { year: y, month: m, ym, monthName }
+}
 
-  let cur = new Date(s)
-  while (cur < e) {
-    const dayEnd = new Date(cur); dayEnd.setHours(23, 59, 59, 999)
-    const segEnd = e < dayEnd ? e : dayEnd
-    out.push({
-      id: item.id,
-      dayKey: ymdLocal(cur),
-      start: new Date(cur),
-      end: new Date(segEnd),
-      created_by: item.created_by ?? undefined,
-      category: item.category ?? undefined,
-      note: item.note ?? undefined
-    })
-    const next = new Date(cur); next.setDate(cur.getDate() + 1); next.setHours(0, 0, 0, 0)
-    cur = next
+/** 取得該月第一天（台北）是星期幾（0..6, Sun..Sat），回傳格子起始日 key（含前導空白）與該月天數 */
+function buildMonthGridKeys(pivot: Date) {
+  // 取該月1日的 12:00（避免跨時區時差），再求出當天是星期幾
+  const y = tpeMonthInfo(pivot).year
+  const m = tpeMonthInfo(pivot).month
+  const firstMid = new Date(`${y}-${String(m).padStart(2, '0')}-01T12:00:00+08:00`)
+  const firstDow = firstMid.getUTCDay() // 0..6
+
+  // 該月總天數：用「下月的 0 號」技巧（仍以 +08 表示）
+  const nextMonth = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`
+  const lastMid = new Date(`${nextMonth}-01T12:00:00+08:00`)
+  lastMid.setUTCDate(0) // 變成本月最後一天（台北視角）
+  const daysInMonth = Number(new Intl.DateTimeFormat('en-CA', { timeZone: TZ, day: '2-digit' }).format(lastMid))
+
+  // 計算格子的起點（第一格要顯示成「當月1日」前導的那些天）
+  const firstGrid = new Date(firstMid) // 先複製
+  firstGrid.setUTCDate(firstMid.getUTCDate() - firstDow)
+
+  // 6 週 * 7 天 = 42 格
+  const keys: string[] = []
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(firstGrid)
+    d.setUTCDate(firstGrid.getUTCDate() + i)
+    keys.push(tpeDateKey(d))
   }
-  return out
+  return { keys, daysInMonth }
 }
 
-/** 類別顏色（可按需增修）。沒有 category 就用 'default'。 */
-const CATEGORY_STYLE: Record<string, { chip: string; dot: string; pill: string }> = {
-  default:  { chip: 'bg-brand-100 text-brand-700', dot: 'bg-brand-600',  pill: 'bg-brand-600 text-white' },
-  教會聚會: { chip: 'bg-emerald-100 text-emerald-700', dot: 'bg-emerald-600', pill: 'bg-emerald-600 text-white' },
-  社團活動: { chip: 'bg-rose-100 text-rose-700',       dot: 'bg-rose-600',    pill: 'bg-rose-600 text-white' },
-  研習:     { chip: 'bg-indigo-100 text-indigo-700',   dot: 'bg-indigo-600',  pill: 'bg-indigo-600 text-white' },
-  其他:     { chip: 'bg-amber-100 text-amber-700',     dot: 'bg-amber-600',   pill: 'bg-amber-600 text-white' }
+/** 從 note 中抽出「申請原因」：去掉 [場地:][姓名:][Email:][電話:] 標頭後的剩餘字串 */
+function extractReason(note?: string | null) {
+  if (!note) return ''
+  let s = note
+    .replace(/\[場地:[^\]]*\]\s*/g, '')
+    .replace(/\[姓名:[^\]]*\]\s*/g, '')
+    .replace(/\[Email:[^\]]*\]\s*/g, '')
+    .replace(/\[電話:[^\]]*\]\s*/g, '')
+    .trim()
+  // 一些人可能會加「申請原因：」這種前綴，順手去掉常見前綴
+  s = s.replace(/^(申請原因[:：]\s*)/g, '').trim()
+  return s
 }
 
-/** 取得類別樣式（含 fallback） */
-function catStyle(category?: string | null) {
-  if (!category) return CATEGORY_STYLE.default
-  return CATEGORY_STYLE[category] ?? CATEGORY_STYLE.default
-}
-
-/* ====== 主元件 ====== */
-export default function CalendarPage({ apiBase }: Props) {
-  const API_BASE = (apiBase ?? ENV_API_BASE ?? '').replace(/\/+$/, '') // 去尾斜線，避免 //api
-  const now = new Date()
-  const [mode, setMode] = useState<ViewMode>('month')
-  const [month, setMonth] = useState<MonthKey>({ y: now.getFullYear(), m: now.getMonth() })
-  const [anchor, setAnchor] = useState<Date>(startOfWeek(now)) // 週/日模式的定位點（週首日）
-  const [items, setItems] = useState<ApprovedItem[]>([])
+export default function CalendarPage() {
+  const [items, setItems] = useState<Booking[]>([])
   const [loading, setLoading] = useState(false)
-  const [error, setErr] = useState<string | null>(null)
-  const [active, setActive] = useState<DayPiece | null>(null) // 事件詳情卡
+  const [err, setErr] = useState('')
+  const [pivot, setPivot] = useState(() => new Date()) // 目前月份的任何一天
 
-  const monthDays = useMemo(() => buildMonthGrid(month), [month])
-  const weekDays  = useMemo(() => Array.from({length:7}, (_,i) => addDays(anchor, i)), [anchor])
-
-  useEffect(() => {
-    let mounted = true
-    const ac = new AbortController()
-    ;(async () => {
-      setLoading(true); setErr(null)
-      try {
-        // 你後端若路由不同（例如 /api/bookings），請在這裡對齊
-        const url = `${API_BASE}/api/bookings/approved`
-        // 逾時保護（8 秒）
-        const t = setTimeout(() => ac.abort('timeout'), 8000)
-        const r = await fetch(url, {
-          credentials: 'include', // 若後端用 Session/Cookie 必須帶上
-          headers: { 'Accept': 'application/json' },
-          signal: ac.signal,
-        })
-        clearTimeout(t)
-        if (!r.ok) throw new Error(`HTTP ${r.status}`)
-        const j = await r.json()
-        if (mounted) setItems(Array.isArray(j.items) ? j.items : Array.isArray(j) ? j : [])
-      } catch (e: any) {
-        // fetch TypeError / abort 多半是 CORS、HTTPS 混合內容或網路中斷
-        const msg =
-          e?.name === 'AbortError' ? '連線逾時（請檢查後端是否可達 / CORS）' :
-          e?.message?.includes('Failed to fetch') ? '連線失敗（可能是 CORS 或 HTTPS 網域不一致）' :
-          e?.message || '資料載入失敗'
-        if (mounted) setErr(msg)
-      } finally {
-        if (mounted) setLoading(false)
-      }
-    })()
-    return () => { mounted = false; ac.abort() }
-  }, [API_BASE])
-
-  /** 把所有事件切片後按日分組並排序 */
-  const byDay = useMemo(() => {
-    const map = new Map<string, DayPiece[]>()
-    for (const it of items) {
-      for (const seg of splitByDay(it)) {
-        const list = map.get(seg.dayKey) ?? []
-        list.push(seg); map.set(seg.dayKey, list)
-      }
+  async function load() {
+    setLoading(true)
+    setErr('')
+    try {
+      const r = await apiFetch('/api/bookings/approved')
+      const data = await r.json()
+      setItems(data.items ?? [])
+    } catch (e: any) {
+      setErr(e?.message || '載入失敗')
+      setItems([])
+    } finally {
+      setLoading(false)
     }
-    for (const [k, list] of map) {
-      list.sort((a,b) => a.start.getTime() - b.start.getTime())
-      map.set(k, list)
+  }
+
+  useEffect(() => { load() }, [])
+
+  const { monthName } = useMemo(() => tpeMonthInfo(pivot), [pivot])
+  const { keys } = useMemo(() => buildMonthGridKeys(pivot), [pivot])
+
+  // 依「台北日期」分組
+  const eventsByKey = useMemo(() => {
+    const map: Record<string, Array<{ id: string; start: Date; label: string }>> = {}
+    for (const b of items) {
+      const start = new Date(b.start_ts)
+      const key = tpeDateKey(start)
+      const reason = extractReason(b.note)
+      const label = `${fmtHHmmTPE(start)} ${reason || '（未填原因）'}`
+      if (!map[key]) map[key] = []
+      map[key].push({ id: b.id, start, label })
+    }
+    // 每日依開始時間排序
+    for (const k of Object.keys(map)) {
+      map[k].sort((a, b) => a.start.getTime() - b.start.getTime())
     }
     return map
   }, [items])
 
-  /* ====== 導覽控制 ====== */
-  function prev() {
-    if (mode === 'month') {
-      const d = new Date(month.y, month.m, 1); d.setMonth(month.m - 1)
-      setMonth({ y: d.getFullYear(), m: d.getMonth() })
-    } else if (mode === 'week') {
-      setAnchor(addDays(anchor, -7))
-    } else {
-      setAnchor(addDays(anchor, -1))
-    }
-  }
-  function next() {
-    if (mode === 'month') {
-      const d = new Date(month.y, month.m, 1); d.setMonth(month.m + 1)
-      setMonth({ y: d.getFullYear(), m: d.getMonth() })
-    } else if (mode === 'week') {
-      setAnchor(addDays(anchor, 7))
-    } else {
-      setAnchor(addDays(anchor, 1))
-    }
-  }
-  function today() {
-    const t = new Date()
-    if (mode === 'month') setMonth({ y: t.getFullYear(), m: t.getMonth() })
-    else setAnchor(startOfWeek(t))
-  }
-
-  const monthLabel = new Date(month.y, month.m, 1).toLocaleDateString([], { year: 'numeric', month: 'long' })
-  const weekLabel = `${weekDays[0].toLocaleDateString()} ~ ${weekDays[6].toLocaleDateString()}`
-  const dayLabel  = anchor.toLocaleDateString()
-  const tzLabel   = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const weekNames = ['日','一','二','三','四','五','六']
-
-  /* ====== UI ====== */
+  // UI
   return (
-    <div className="space-y-4">
-      {/* 控制列 */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <div className="max-w-6xl mx-auto p-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-bold">行事曆</h2>
         <div className="flex items-center gap-2">
-          <button className="btn-ghost" onClick={prev}>← 上一個</button>
-          <button className="btn-ghost" onClick={today}>今天</button>
-          <button className="btn-ghost" onClick={next}>下一個 →</button>
-        </div>
-
-        <div className="flex items-center gap-2 text-lg font-semibold">
-          {mode === 'month' && monthLabel}
-          {mode === 'week'  && `本週：${weekLabel}`}
-          {mode === 'day'   && `這一天：${dayLabel}`}
-        </div>
-
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-500">時區：{tzLabel}</span>
-          <div className="border-l h-5 mx-2" />
-          <div className="inline-flex rounded-2xl border border-slate-300 overflow-hidden">
-            <button className={`px-3 py-1 text-sm ${mode==='month'?'bg-slate-200':''}`} onClick={()=>setMode('month')}>月</button>
-            <button className={`px-3 py-1 text-sm ${mode==='week'?'bg-slate-200':''}`}  onClick={()=>setMode('week')}>週</button>
-            <button className={`px-3 py-1 text-sm ${mode==='day'?'bg-slate-200':''}`}   onClick={()=>setMode('day')}>日</button>
-          </div>
+          <button
+            className="rounded border px-3 py-1"
+            onClick={() => setPivot(new Date())}
+          >
+            今天
+          </button>
+          <button
+            className="rounded border px-3 py-1"
+            onClick={() => setPivot(d => {
+              const info = tpeMonthInfo(d)
+              const prev = new Date(`${info.year}-${String(info.month).padStart(2, '0')}-15T12:00:00+08:00`)
+              prev.setUTCMonth(prev.getUTCMonth() - 1)
+              return prev
+            })}
+          >
+            上月
+          </button>
+          <button
+            className="rounded border px-3 py-1"
+            onClick={() => setPivot(d => {
+              const info = tpeMonthInfo(d)
+              const next = new Date(`${info.year}-${String(info.month).padStart(2, '0')}-15T12:00:00+08:00`)
+              next.setUTCMonth(next.getUTCMonth() + 1)
+              return next
+            })}
+          >
+            下月
+          </button>
+          <button className="rounded border px-3 py-1" onClick={load} disabled={loading}>
+            {loading ? '更新中…' : '重新整理'}
+          </button>
         </div>
       </div>
 
-      {/* 載入／錯誤 */}
-      {loading && <div className="card text-sm text-slate-600">載入中…</div>}
-      {error   && <div className="card text-sm text-rose-600">載入失敗：{error}</div>}
+      <div className="text-lg font-medium">{monthName}</div>
+      {err && <div className="rounded border border-rose-200 bg-rose-50 text-rose-700 px-3 py-2 text-sm">{err}</div>}
 
-      {/* 視圖 */}
-      {mode === 'month' && (
-        <MonthView days={monthDays} byDay={byDay} currentMonth={month.m} onPick={setActive} />
-      )}
-      {mode === 'week' && (
-        <WeekView days={weekDays} byDay={byDay} onPick={setActive} />
-      )}
-      {mode === 'day' && (
-        <DayView day={anchor} byDay={byDay} onPick={setActive} />
-      )}
-
-      {/* 類別圖例（僅示意幾種） */}
-      <div className="flex flex-wrap items-center gap-2 text-xs">
-        <span className="text-slate-500 mr-1">圖例：</span>
-        {Object.entries(CATEGORY_STYLE).map(([name, st]) => (
-          <span key={name} className={`inline-flex items-center gap-1 rounded-full px-2 py-1 ${st.chip}`}>
-            <span className={`size-2 rounded-full ${st.dot}`} />
-            {name}
-          </span>
+      {/* 週標頭 */}
+      <div className="grid grid-cols-7 text-center text-xs text-slate-600">
+        {['日','一','二','三','四','五','六'].map(d => (
+          <div key={d} className="py-2">{`週${d}`}</div>
         ))}
       </div>
 
-      {/* 事件詳情卡（Modal） */}
-      {active && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onClick={()=>setActive(null)}>
-          <div className="card max-w-md w-full" onClick={(e)=>e.stopPropagation()}>
-            <div className="mb-2 text-lg font-semibold">事件詳情</div>
-            <div className="space-y-1 text-sm">
-              <div><span className="text-slate-500">日期：</span>{active.dayKey}</div>
-              <div><span className="text-slate-500">時間：</span>{fmtTime(active.start)}–{fmtTime(active.end)}</div>
-              <div><span className="text-slate-500">申請人：</span>{active.created_by || '—'}</div>
-              <div><span className="text-slate-500">分類：</span>{active.category || 'default'}</div>
-              {active.note && <div><span className="text-slate-500">備註：</span>{active.note}</div>}
-            </div>
-            <div className="mt-4 text-right">
-              <button className="btn-ghost" onClick={()=>setActive(null)}>關閉</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-/* ====== 子視圖元件 ====== */
-
-function MonthView({
-  days, byDay, currentMonth, onPick
-}: {
-  days: Date[]
-  byDay: Map<string, DayPiece[]>
-  currentMonth: number
-  onPick: (p: DayPiece)=>void
-}) {
-  const weekNames = ['日','一','二','三','四','五','六']
-  return (
-    <div className="grid grid-cols-7 gap-px rounded-2xl overflow-hidden border border-slate-200 bg-slate-200">
-      {weekNames.map(w=>(
-        <div key={w} className="bg-slate-50 px-2 py-1 text-center text-xs font-medium text-slate-500">{w}</div>
-      ))}
-      {days.map((d, i) => {
-        const inMonth = d.getMonth() === currentMonth
-        const isToday = d.toDateString() === new Date().toDateString()
-        const key = ymdLocal(d)
-        const list = byDay.get(key) ?? []
-        return (
-          <div key={i} className={`min-h-28 bg-white p-2 ${!inMonth ? 'bg-slate-50 text-slate-400':''}`}>
-            <div className="flex items-center justify-between">
-              <div className={[
-                'inline-flex items-center justify-center size-6 rounded-full text-xs',
-                isToday ? 'bg-brand-600 text-white font-semibold shadow-soft' : 'text-slate-700'
-              ].join(' ')}>
-                {d.getDate()}
-              </div>
-              {list.length>0 && <div className="text-[10px] text-slate-500">共 {list.length} 筆</div>}
-            </div>
-            <div className="mt-1 space-y-1">
-              {list.slice(0,4).map(ev=>{
-                const st = catStyle(ev.category)
-                return (
-                  <button
-                    key={`${ev.id}-${ev.start.toISOString()}`}
-                    className={`w-full text-left truncate rounded-md px-2 py-1 text-xs ${st.chip}`}
-                    onClick={()=>onPick(ev)}
-                    title={`${fmtTime(ev.start)}–${fmtTime(ev.end)}`}
-                  >
-                    <span className={`inline-block size-2 rounded-full mr-1 align-middle ${st.dot}`} />
-                    {fmtTime(ev.start)}–{fmtTime(ev.end)}
-                  </button>
-                )
-              })}
-              {list.length>4 && <div className="text-[10px] text-slate-500">… 還有 {list.length-4} 筆</div>}
-            </div>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-function WeekView({
-  days, byDay, onPick
-}: {
-  days: Date[]
-  byDay: Map<string, DayPiece[]>
-  onPick: (p: DayPiece)=>void
-}) {
-  return (
-    <div className="grid md:grid-cols-7 grid-cols-1 gap-2">
-      {days.map((d,i)=>{
-        const key = ymdLocal(d)
-        const list = byDay.get(key) ?? []
-        const isToday = d.toDateString() === new Date().toDateString()
-        return (
-          <div key={i} className="card">
-            <div className="mb-2 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className={`size-6 grid place-items-center rounded-full text-xs ${isToday?'bg-brand-600 text-white':'bg-slate-100 text-slate-700'}`}>
-                  {['日','一','二','三','四','五','六'][d.getDay()]}
-                </div>
-                <div className="text-sm">{d.toLocaleDateString()}</div>
-              </div>
-              {list.length>0 && <div className="text-[10px] text-slate-500">共 {list.length} 筆</div>}
-            </div>
-            <div className="space-y-1">
-              {list.map(ev=>{
-                const st = catStyle(ev.category)
-                return (
-                  <button
-                    key={`${ev.id}-${ev.start.toISOString()}`}
-                    className={`w-full text-left truncate rounded-md px-2 py-1 text-xs ${st.chip}`}
-                    onClick={()=>onPick(ev)}
-                    title={`${fmtTime(ev.start)}–${fmtTime(ev.end)}`}
-                  >
-                    <span className={`inline-block size-2 rounded-full mr-1 align-middle ${st.dot}`} />
-                    {fmtTime(ev.start)}–{fmtTime(ev.end)} {ev.category ? `· ${ev.category}` : ''}
-                  </button>
-                )
-              })}
-              {list.length===0 && <div className="text-xs text-slate-400">— 無 —</div>}
-            </div>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-function DayView({
-  day, byDay, onPick
-}: {
-  day: Date
-  byDay: Map<string, DayPiece[]>
-  onPick: (p: DayPiece)=>void
-}) {
-  const key = ymdLocal(day)
-  const list = byDay.get(key) ?? []
-  return (
-    <div className="card">
-      <div className="mb-2 text-sm text-slate-600">{day.toLocaleDateString()}（{['日','一','二','三','四','五','六'][day.getDay()]}）</div>
-      <div className="space-y-1">
-        {list.map(ev=>{
-          const st = catStyle(ev.category)
+      {/* 42格月曆 */}
+      <div className="grid grid-cols-7 gap-px bg-slate-200 rounded-lg overflow-hidden">
+        {keys.map(k => {
+          const dayNum = Number(k.slice(-2))
+          const todayKey = tpeDateKey(new Date())
+          const isToday = k === todayKey
+          const events = eventsByKey[k] ?? []
           return (
-            <button
-              key={`${ev.id}-${ev.start.toISOString()}`}
-              className={`w-full text-left truncate rounded-md px-3 py-2 text-sm ${st.chip}`}
-              onClick={()=>onPick(ev)}
-              title={`${fmtTime(ev.start)}–${fmtTime(ev.end)}`}
-            >
-              <span className={`inline-block size-2 rounded-full mr-2 align-middle ${st.dot}`} />
-              {fmtTime(ev.start)}–{fmtTime(ev.end)}
-              {ev.category ? ` · ${ev.category}` : ''}
-              {ev.created_by ? ` · ${ev.created_by}` : ''}
-            </button>
+            <div key={k} className="bg-white min-h-[110px]">
+              <div className={`flex items-center justify-between px-2 py-1 text-xs ${isToday ? 'bg-blue-50' : ''}`}>
+                <span className={`font-medium ${isToday ? 'text-blue-700' : 'text-slate-700'}`}>{dayNum}</span>
+                {isToday && <span className="text-[10px] text-blue-700">今天</span>}
+              </div>
+              <div className="px-2 pb-2 space-y-1">
+                {events.map(ev => (
+                  <div
+                    key={ev.id}
+                    className="text-[12px] leading-tight px-2 py-1 rounded bg-emerald-50 text-emerald-700 truncate"
+                    title={ev.label}
+                  >
+                    {ev.label}
+                  </div>
+                ))}
+                {events.length === 0 && (
+                  <div className="text-[11px] text-slate-300 px-2 py-1">—</div>
+                )}
+              </div>
+            </div>
           )
         })}
-        {list.length===0 && <div className="text-sm text-slate-400">今日尚無已核准借用</div>}
       </div>
+
+      <p className="text-xs text-slate-500">
+        說明：每筆以「台北時間」顯示；事件內容為「開始時間 + 申請原因」。若原因未填，會顯示「（未填原因）」。
+      </p>
     </div>
   )
 }
