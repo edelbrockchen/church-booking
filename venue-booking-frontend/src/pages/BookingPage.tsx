@@ -178,6 +178,7 @@ export default function BookingPage() {
         }
         const payload: any = {
           start: (adj as any).start.toISOString(), // ✅ 已調整到可申請窗口內
+          venue,                                   // ✅ 後端必填
           created_by: applicant.trim(),
           note: fullNote,
           ...(category ? { category } : {})
@@ -197,7 +198,8 @@ export default function BookingPage() {
         for (const it of repeatPreview) {
           if (it.start && it.end) {
             const payload: any = {
-              start: it.start.toISOString(),       // ✅ 皆已經過調整/裁切判定
+              start: it.start.toISOString(), // ✅ 皆已經過調整/裁切判定
+              venue,                         // ✅ 後端必填
               created_by: applicant.trim(),
               note: fullNote,
               ...(category ? { category } : {})
@@ -213,7 +215,34 @@ export default function BookingPage() {
         setResultMsg(`已送出 ${count} 筆重複日期申請，等待管理者審核`)
       }
     } catch (e: any) {
-      setResultMsg(`送出失敗：${e?.message || 'unknown'}`)
+      // 友善錯誤訊息：嘗試把 "[409] {...}" 解析出 JSON
+      let msg = e?.message || 'unknown'
+      try {
+        const jsonStr = msg.replace(/^.*?\{/, '{')
+        const data = JSON.parse(jsonStr)
+        if (data?.error === 'overlap') {
+          if (data?.conflict) {
+            const s = new Date(data.conflict.start_ts)
+            const ee = new Date(data.conflict.end_ts)
+            const fmt = new Intl.DateTimeFormat('zh-TW', { timeZone:'Asia/Taipei', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false })
+            const range = `${fmt.format(s)}–${fmt.format(ee)}`
+            msg = data?.message || `該場地已被申請（${data.conflict.venue ?? venue}；${range}）`
+          } else {
+            msg = data?.message || '該場地已被申請，請改時間或改場地。'
+          }
+        } else if (data?.error === 'must_accept_terms') {
+          msg = '請先同意借用規範，再送出申請。'
+        } else if (data?.error === 'sunday_disabled') {
+          msg = '週日不可申請。'
+        } else if (data?.error === 'too_late') {
+          msg = '已超過當日可申請上限，請改選更早的時間。'
+        } else if (data?.error === 'too_early') {
+          msg = '每日最早 07:00 開放申請。'
+        } else if (data?.error === 'invalid_payload') {
+          msg = '送出的資料格式不正確，請重新整理或聯繫管理員。'
+        }
+      } catch {}
+      setResultMsg(`送出失敗：${msg}`)
       console.error(e)
     } finally {
       setSubmitting(false)
