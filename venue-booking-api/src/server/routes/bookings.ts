@@ -11,11 +11,10 @@ const pool = makePool()
 
 /* --------------------------- 共用設定 / 型別 --------------------------- */
 
-// 可接受的分類（前端「婚禮」已改為「社團活動」）
 const AllowedCategories = ['教會聚會', '社團活動', '研習', '其他'] as const
 
 const createSchema = z.object({
-  start: z.string().datetime(),               // ISO 字串（含時區）
+  start: z.string().datetime(), // ISO（含時區）
   category: z.string().trim().optional()
     .transform(v => (v && v.length ? v : undefined))
     .refine(v => !v || AllowedCategories.includes(v as any), { message: 'invalid_category' }),
@@ -25,27 +24,23 @@ const createSchema = z.object({
 
 function addHours(d: Date, h: number) { return new Date(d.getTime() + h * 3600_000) }
 
-/** ------- 台北時間工具（不靠機器時區；用 +08:00 明確建構） ------- */
-function tpeDateKey(d: Date) {
-  // 該瞬間在台北的 YYYY-MM-DD
-  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit' })
-  return fmt.format(d)
+/* --------------------------- 台北時間工具 --------------------------- */
+function tpeKey(d: Date) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).format(d) // 2025-10-01
 }
-function earliestOfDayTPE(d: Date) {
-  // 台北當天 07:00 對應的絕對時間
-  return new Date(`${tpeDateKey(d)}T07:00:00+08:00`)
-}
+function earliestOfDayTPE(d: Date) { return new Date(`${tpeKey(d)}T07:00:00+08:00`) }
 function latestCapTPE(d: Date) {
-  // 台北：週一/週三 最晚 18:00；其餘 21:30
-  const dow = new Date(`${tpeDateKey(d)}T12:00:00+08:00`).getUTCDay()
+  const dow = new Date(`${tpeKey(d)}T12:00:00+08:00`).getUTCDay()
   const hhmm = (dow === 1 || dow === 3) ? '18:00:00' : '21:30:00'
-  return new Date(`${tpeDateKey(d)}T${hhmm}+08:00`)
+  return new Date(`${tpeKey(d)}T${hhmm}+08:00`)
 }
 function isSundayTPE(d: Date) {
-  return new Date(`${tpeDateKey(d)}T12:00:00+08:00`).getUTCDay() === 0
+  return new Date(`${tpeKey(d)}T12:00:00+08:00`).getUTCDay() === 0
 }
 
-// 依你實際的 session 結構調整
+/* --------------------------- 取使用者 --------------------------- */
 function getUserId(req: Request): string | null {
   return (req as any).session?.user?.id ?? null
 }
@@ -53,8 +48,7 @@ function isAdmin(req: Request): boolean {
   return (req as any).session?.user?.role === 'admin'
 }
 
-/* --------------------------- Demo 資料（可開關） --------------------------- */
-
+/* --------------------------- Demo（可開關） --------------------------- */
 const DEMO_BOOKINGS = (process.env.DEMO_BOOKINGS ?? 'true').toLowerCase() === 'true'
 const DEMO_ITEMS = [
   {
@@ -76,23 +70,16 @@ const DEMO_ITEMS = [
 ]
 
 /* --------------------------- 建立預約 --------------------------- */
-
 bookingsRouter.post('/', async (req, res) => {
-  console.log('[bookings][POST /] userId =', getUserId(req))
-
   const p = createSchema.safeParse(req.body)
-  if (!p.success) {
-    return res.status(400).json({ error: 'invalid_payload', details: p.error.issues })
-  }
+  if (!p.success) return res.status(400).json({ error: 'invalid_payload', details: p.error.issues })
 
-  // 來自前端的開始時間（ISO，含時區）
+  // 來自前端的開始時間（含時區）
   const startRaw = new Date(p.data.start)
   if (isNaN(startRaw.getTime())) return res.status(400).json({ error: 'invalid_start' })
+  if (isSundayTPE(startRaw))     return res.status(400).json({ error: 'sunday_disabled' })
 
-  // 週日禁用（以台北時間判斷）
-  if (isSundayTPE(startRaw)) return res.status(400).json({ error: 'sunday_disabled' })
-
-  // ★ 關鍵：若早於當天台北 07:00，直接「上調」到 07:00；不再回 too_early
+  // 若早於台北 07:00，直接上調到 07:00（不回 too_early）
   const earliest = earliestOfDayTPE(startRaw)
   const startEff = startRaw.getTime() < earliest.getTime() ? earliest : startRaw
 
@@ -101,8 +88,6 @@ bookingsRouter.post('/', async (req, res) => {
   const targetEnd = addHours(startEff, 3)
   const endEff = new Date(Math.min(targetEnd.getTime(), cap.getTime()))
   const truncated = endEff.getTime() < targetEnd.getTime()
-
-  // 若整個窗口都塞不下任何時間（例如當天已經超過上限），回 too_late
   if (endEff.getTime() <= startEff.getTime()) {
     return res.status(409).json({ error: 'too_late' })
   }
@@ -111,7 +96,7 @@ bookingsRouter.post('/', async (req, res) => {
   const note = p.data.note ?? undefined
   const created_by = p.data.created_by ?? undefined
 
-  // 無 DB（本地測試）就回 demo 結果
+  // 無 DB：回 demo
   if (!pool) {
     return res.status(201).json({
       id: 'demo-' + Math.random().toString(36).slice(2),
@@ -128,41 +113,33 @@ bookingsRouter.post('/', async (req, res) => {
 
   const c = await pool.connect()
   try {
-    // ✅ 必須先同意借用規範
+    // 需先同意規範
     const userId = getUserId(req)
     if (!userId) return res.status(401).json({ error: 'unauthorized' })
-
     const has = await c.query('SELECT 1 FROM terms_acceptances WHERE user_id=$1 LIMIT 1', [userId])
     if (has.rowCount === 0) return res.status(403).json({ error: 'must_accept_terms' })
 
     await c.query('BEGIN')
 
-    // 檢查重疊（與 DB constraint 一致）
-    const rangeMode = '[]'
-    const overlap = await c.query(
+    // ✅ 只比對 pending/approved；✅ 半開區間 [) → 尾端相接不算重疊
+    const rangeMode = '[)'
+    const ov = await c.query(
       `
-      SELECT 1 FROM bookings
-      WHERE tstzrange(start_ts, end_ts, $3) && tstzrange($1::timestamptz, $2::timestamptz, $3)
+      SELECT id, start_ts, end_ts
+      FROM bookings
+      WHERE status IN ('pending','approved')
+        AND tstzrange(start_ts, end_ts, $3) && tstzrange($1::timestamptz, $2::timestamptz, $3)
       LIMIT 1
       `,
       [startEff.toISOString(), endEff.toISOString(), rangeMode]
     )
-    if (overlap.rows.length > 0) {
+    if (ov.rows.length > 0) {
       await c.query('ROLLBACK')
-      return res.status(409).json({ error: 'overlap' })
+      const expose = (process.env.EXPOSE_CONFLICTS ?? 'false').toLowerCase() === 'true'
+      return res.status(409).json(expose ? { error: 'overlap', conflict: ov.rows[0] } : { error: 'overlap' })
     }
 
     const id = randomUUID()
-    console.log('[bookings] inserting', {
-      id,
-      start: startEff.toISOString(),
-      end: endEff.toISOString(),
-      userId,
-      category,
-      note,
-      created_by
-    })
-
     await c.query(
       `
       INSERT INTO bookings (id, start_ts, end_ts, created_by, status, category, note)
@@ -196,7 +173,6 @@ bookingsRouter.post('/', async (req, res) => {
 })
 
 /* --------------------------- 列表（全部） --------------------------- */
-
 bookingsRouter.get('/', async (_req, res) => {
   if (!pool) return res.json({ items: [] })
   const { rows } = await pool.query(
@@ -211,11 +187,8 @@ bookingsRouter.get('/', async (_req, res) => {
 })
 
 /* --------------------------- 列表（已核准） --------------------------- */
-
 bookingsRouter.get('/approved', async (_req, res) => {
-  if (!pool) {
-    return res.json({ items: DEMO_BOOKINGS ? DEMO_ITEMS : [] })
-  }
+  if (!pool) return res.json({ items: DEMO_BOOKINGS ? DEMO_ITEMS : [] })
   const { rows } = await pool.query(
     `
     SELECT id, start_ts, end_ts, created_by, category, note
@@ -224,14 +197,11 @@ bookingsRouter.get('/approved', async (_req, res) => {
     ORDER BY start_ts ASC
     `
   )
-  if (rows.length === 0 && DEMO_BOOKINGS) {
-    return res.json({ items: DEMO_ITEMS })
-  }
+  if (rows.length === 0 && DEMO_BOOKINGS) return res.json({ items: DEMO_ITEMS })
   res.json({ items: rows })
 })
 
 /* --------------------------- 取消預約 --------------------------- */
-
 bookingsRouter.post('/:id/cancel', async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'db_unavailable' })
 
