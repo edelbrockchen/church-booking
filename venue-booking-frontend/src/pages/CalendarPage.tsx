@@ -1,3 +1,4 @@
+// src/pages/CalendarPage.tsx
 import React, { useEffect, useMemo, useState } from 'react'
 
 /** 從 props 接 apiBase，沒有則回退到環境變數（本地可為空字串→走 Vite 代理） */
@@ -97,6 +98,16 @@ const CATEGORY_STYLE: Record<string, { chip: string; dot: string; pill: string }
 function catStyle(category?: string | null) {
   if (!category) return CATEGORY_STYLE.default
   return CATEGORY_STYLE[category] ?? CATEGORY_STYLE.default
+}
+
+/** 從 note 萃取「申請原因」：移除像 [場地:][姓名:][Email:][電話:] 這類方括號資訊 */
+function extractReason(note?: string | null) {
+  if (!note) return ''
+  // 先移除所有 [xxx:yyy] 標籤
+  let s = note.replace(/\[[^\]]+\]/g, '').trim()
+  // 壓掉多餘空白
+  s = s.replace(/\s+/g, ' ').trim()
+  return s
 }
 
 /* ====== 主元件 ====== */
@@ -260,7 +271,7 @@ export default function CalendarPage({ apiBase }: Props) {
               <div><span className="text-slate-500">時間：</span>{fmtTime(active.start)}–{fmtTime(active.end)}</div>
               <div><span className="text-slate-500">申請人：</span>{active.created_by || '—'}</div>
               <div><span className="text-slate-500">分類：</span>{active.category || 'default'}</div>
-              {active.note && <div><span className="text-slate-500">備註：</span>{active.note}</div>}
+              <div><span className="text-slate-500">申請原因：</span>{extractReason(active.note) || '（未填）'}</div>
             </div>
             <div className="mt-4 text-right">
               <button className="btn-ghost" onClick={()=>setActive(null)}>關閉</button>
@@ -307,15 +318,16 @@ function MonthView({
             <div className="mt-1 space-y-1">
               {list.slice(0,4).map(ev=>{
                 const st = catStyle(ev.category)
+                const reason = extractReason(ev.note) || '（未填原因）'
                 return (
                   <button
                     key={`${ev.id}-${ev.start.toISOString()}`}
                     className={`w-full text-left truncate rounded-md px-2 py-1 text-xs ${st.chip}`}
                     onClick={()=>onPick(ev)}
-                    title={`${fmtTime(ev.start)}–${fmtTime(ev.end)}`}
+                    title={`${fmtTime(ev.start)} · ${reason}`}
                   >
                     <span className={`inline-block size-2 rounded-full mr-1 align-middle ${st.dot}`} />
-                    {fmtTime(ev.start)}–{fmtTime(ev.end)}
+                    {fmtTime(ev.start)} · {reason}
                   </button>
                 )
               })}
@@ -355,15 +367,16 @@ function WeekView({
             <div className="space-y-1">
               {list.map(ev=>{
                 const st = catStyle(ev.category)
+                const reason = extractReason(ev.note) || '（未填原因）'
                 return (
                   <button
                     key={`${ev.id}-${ev.start.toISOString()}`}
                     className={`w-full text-left truncate rounded-md px-2 py-1 text-xs ${st.chip}`}
                     onClick={()=>onPick(ev)}
-                    title={`${fmtTime(ev.start)}–${fmtTime(ev.end)}`}
+                    title={`${fmtTime(ev.start)} · ${reason}`}
                   >
                     <span className={`inline-block size-2 rounded-full mr-1 align-middle ${st.dot}`} />
-                    {fmtTime(ev.start)}–{fmtTime(ev.end)} {ev.category ? `· ${ev.category}` : ''}
+                    {fmtTime(ev.start)} · {reason}
                   </button>
                 )
               })}
@@ -391,17 +404,16 @@ function DayView({
       <div className="space-y-1">
         {list.map(ev=>{
           const st = catStyle(ev.category)
+          const reason = extractReason(ev.note) || '（未填原因）'
           return (
             <button
               key={`${ev.id}-${ev.start.toISOString()}`}
               className={`w-full text-left truncate rounded-md px-3 py-2 text-sm ${st.chip}`}
               onClick={()=>onPick(ev)}
-              title={`${fmtTime(ev.start)}–${fmtTime(ev.end)}`}
+              title={`${fmtTime(ev.start)} · ${reason}`}
             >
               <span className={`inline-block size-2 rounded-full mr-2 align-middle ${st.dot}`} />
-              {fmtTime(ev.start)}–{fmtTime(ev.end)}
-              {ev.category ? ` · ${ev.category}` : ''}
-              {ev.created_by ? ` · ${ev.created_by}` : ''}
+              {fmtTime(ev.start)} · {reason}
             </button>
           )
         })}
