@@ -13,58 +13,48 @@ type Booking = {
 
 const TZ = 'Asia/Taipei'
 
-/** 以台北時間格式化 HH:mm */
+/** 台北時區 YYYY-MM-DD key（用來分組顯示） */
+function tpeDateKey(d: Date) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(d)
+}
+
+/** HH:mm（台北） */
 function fmtHHmmTPE(d: Date) {
   return new Intl.DateTimeFormat('zh-TW', {
     timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false,
   }).format(d)
 }
 
-/** 將日期轉為「台北」的 YYYY-MM-DD key */
-function tpeDateKey(d: Date) {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit',
-  }).format(d) // e.g. 2025-10-01
-}
-
-/** 台北時區的當月資訊（欄位：year, month, key=YYYY-MM, monthName） */
+/** 取當月資訊 */
 function tpeMonthInfo(pivot: Date) {
   const y = Number(new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric' }).format(pivot))
   const m = Number(new Intl.DateTimeFormat('en-CA', { timeZone: TZ, month: '2-digit' }).format(pivot))
-  const ym = `${y}-${String(m).padStart(2, '0')}`
   const monthName = new Intl.DateTimeFormat('zh-TW', { timeZone: TZ, year: 'numeric', month: 'long' }).format(pivot)
-  return { year: y, month: m, ym, monthName }
+  return { year: y, month: m, monthName }
 }
 
-/** 取得該月第一天（台北）是星期幾（0..6, Sun..Sat），回傳格子起始日 key（含前導空白）與該月天數 */
+/** 產生 6 週（42 格）的月曆 key（YYYY-MM-DD，以台北時間計） */
 function buildMonthGridKeys(pivot: Date) {
-  // 取該月1日的 12:00（避免跨時區時差），再求出當天是星期幾
-  const y = tpeMonthInfo(pivot).year
-  const m = tpeMonthInfo(pivot).month
-  const firstMid = new Date(`${y}-${String(m).padStart(2, '0')}-01T12:00:00+08:00`)
+  const { year, month } = tpeMonthInfo(pivot)
+  // 該月 1 號的 12:00（避免時區邊界）
+  const firstMid = new Date(`${year}-${String(month).padStart(2, '0')}-01T12:00:00+08:00`)
   const firstDow = firstMid.getUTCDay() // 0..6
-
-  // 該月總天數：用「下月的 0 號」技巧（仍以 +08 表示）
-  const nextMonth = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`
-  const lastMid = new Date(`${nextMonth}-01T12:00:00+08:00`)
-  lastMid.setUTCDate(0) // 變成本月最後一天（台北視角）
-  const daysInMonth = Number(new Intl.DateTimeFormat('en-CA', { timeZone: TZ, day: '2-digit' }).format(lastMid))
-
-  // 計算格子的起點（第一格要顯示成「當月1日」前導的那些天）
-  const firstGrid = new Date(firstMid) // 先複製
+  // 第一格往回推到週日
+  const firstGrid = new Date(firstMid)
   firstGrid.setUTCDate(firstMid.getUTCDate() - firstDow)
 
-  // 6 週 * 7 天 = 42 格
   const keys: string[] = []
   for (let i = 0; i < 42; i++) {
     const d = new Date(firstGrid)
     d.setUTCDate(firstGrid.getUTCDate() + i)
     keys.push(tpeDateKey(d))
   }
-  return { keys, daysInMonth }
+  return keys
 }
 
-/** 從 note 中抽出「申請原因」：去掉 [場地:][姓名:][Email:][電話:] 標頭後的剩餘字串 */
+/** 從 note 萃取「申請原因」：剝除你前端加的標頭 */
 function extractReason(note?: string | null) {
   if (!note) return ''
   let s = note
@@ -73,7 +63,6 @@ function extractReason(note?: string | null) {
     .replace(/\[Email:[^\]]*\]\s*/g, '')
     .replace(/\[電話:[^\]]*\]\s*/g, '')
     .trim()
-  // 一些人可能會加「申請原因：」這種前綴，順手去掉常見前綴
   s = s.replace(/^(申請原因[:：]\s*)/g, '').trim()
   return s
 }
@@ -82,7 +71,7 @@ export default function CalendarPage() {
   const [items, setItems] = useState<Booking[]>([])
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
-  const [pivot, setPivot] = useState(() => new Date()) // 目前月份的任何一天
+  const [pivot, setPivot] = useState(() => new Date()) // 當前月份任一天
 
   async function load() {
     setLoading(true)
@@ -92,7 +81,7 @@ export default function CalendarPage() {
       const data = await r.json()
       setItems(data.items ?? [])
     } catch (e: any) {
-      setErr(e?.message || '載入失敗')
+      setErr(e?.message || '資料載入失敗')
       setItems([])
     } finally {
       setLoading(false)
@@ -102,9 +91,9 @@ export default function CalendarPage() {
   useEffect(() => { load() }, [])
 
   const { monthName } = useMemo(() => tpeMonthInfo(pivot), [pivot])
-  const { keys } = useMemo(() => buildMonthGridKeys(pivot), [pivot])
+  const keys = useMemo(() => buildMonthGridKeys(pivot), [pivot])
 
-  // 依「台北日期」分組
+  // 依「台北日期」分組，並將每筆做成「HH:mm 申請原因」的標籤
   const eventsByKey = useMemo(() => {
     const map: Record<string, Array<{ id: string; start: Date; label: string }>> = {}
     for (const b of items) {
@@ -115,25 +104,18 @@ export default function CalendarPage() {
       if (!map[key]) map[key] = []
       map[key].push({ id: b.id, start, label })
     }
-    // 每日依開始時間排序
     for (const k of Object.keys(map)) {
       map[k].sort((a, b) => a.start.getTime() - b.start.getTime())
     }
     return map
   }, [items])
 
-  // UI
   return (
     <div className="max-w-6xl mx-auto p-4 space-y-4">
+      {/* 標頭與操作 */}
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold">行事曆</h2>
         <div className="flex items-center gap-2">
-          <button
-            className="rounded border px-3 py-1"
-            onClick={() => setPivot(new Date())}
-          >
-            今天
-          </button>
           <button
             className="rounded border px-3 py-1"
             onClick={() => setPivot(d => {
@@ -144,6 +126,12 @@ export default function CalendarPage() {
             })}
           >
             上月
+          </button>
+          <button
+            className="rounded border px-3 py-1"
+            onClick={() => setPivot(new Date())}
+          >
+            本月
           </button>
           <button
             className="rounded border px-3 py-1"
@@ -163,7 +151,11 @@ export default function CalendarPage() {
       </div>
 
       <div className="text-lg font-medium">{monthName}</div>
-      {err && <div className="rounded border border-rose-200 bg-rose-50 text-rose-700 px-3 py-2 text-sm">{err}</div>}
+      {err && (
+        <div className="rounded border border-rose-200 bg-rose-50 text-rose-700 px-3 py-2 text-sm">
+          載入失敗：{err}
+        </div>
+      )}
 
       {/* 週標頭 */}
       <div className="grid grid-cols-7 text-center text-xs text-slate-600">
@@ -172,7 +164,7 @@ export default function CalendarPage() {
         ))}
       </div>
 
-      {/* 42格月曆 */}
+      {/* 42 格月曆 */}
       <div className="grid grid-cols-7 gap-px bg-slate-200 rounded-lg overflow-hidden">
         {keys.map(k => {
           const dayNum = Number(k.slice(-2))
@@ -205,7 +197,7 @@ export default function CalendarPage() {
       </div>
 
       <p className="text-xs text-slate-500">
-        說明：每筆以「台北時間」顯示；事件內容為「開始時間 + 申請原因」。若原因未填，會顯示「（未填原因）」。
+        說明：每筆以「台北時間」顯示；內容為「開始時間 + 申請原因」。若原因未填，會顯示「（未填原因）」。
       </p>
     </div>
   )
