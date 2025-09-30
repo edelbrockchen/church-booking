@@ -8,28 +8,6 @@ type Category = '' | '教會聚會' | '社團活動' | '研習' | '其他'
 type Venue = '大會堂' | '康樂廳' | '其它教室'
 type Mode = 'single' | 'repeat'
 
-// ---- 時間工具：統一用「台北時間」來判斷日規則 ----
-const TPE_OFFSET = 8 * 3600_000
-const toTPE = (d: Date) => new Date(d.getTime() + TPE_OFFSET)     // UTC→TPE
-const fromTPE = (d: Date) => new Date(d.getTime() - TPE_OFFSET)   // TPE→UTC(實際瞬間)
-const isSundayTPE = (d: Date) => toTPE(d).getDay() === 0
-
-function earliestOfDayTPE(base: Date) {
-  // 回傳「該天 台北 07:00」對應到實際瞬間（Date）
-  const t = toTPE(base)
-  const e = new Date(t); e.setHours(7, 0, 0, 0)
-  return fromTPE(e)
-}
-function latestCapTPE(base: Date) {
-  // 回傳「該天 台北最晚結束 (一/三 18:00；其餘 21:30)」對應到實際瞬間
-  const t = toTPE(base)
-  const day = t.getDay()
-  const cap = new Date(t)
-  if (day === 1 || day === 3) cap.setHours(18, 0, 0, 0)
-  else cap.setHours(21, 30, 0, 0)
-  return fromTPE(cap)
-}
-
 function addHours(d: Date, h: number) { return new Date(d.getTime() + h * 3600_000) }
 function fmtDate(d: Date) {
   const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), dd = String(d.getDate()).padStart(2, '0')
@@ -48,13 +26,37 @@ function parseTimeToDate(baseDate: Date, hhmm: string) {
   return d
 }
 
+/** 以「台北時間」判斷的工具（不用手動 +8/-8，改用 ISO +08:00 組合） */
+function tpeDateKey(d: Date) {
+  // 取該瞬間在台北的日期（YYYY-MM-DD）
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit' })
+  return fmt.format(d) // e.g. "2025-10-01"
+}
+function tpeDow(d: Date) {
+  // 回傳該瞬間在台北的星期（0=Sun..6=Sat）
+  const key = tpeDateKey(d)
+  return new Date(`${key}T12:00:00+08:00`).getUTCDay()
+}
+function earliestOfDayTPE(d: Date) {
+  // 該瞬間所在的台北那一天的 07:00（回傳絕對時間）
+  const key = tpeDateKey(d)
+  return new Date(`${key}T07:00:00+08:00`)
+}
+function latestCapTPE(d: Date) {
+  // 台北：週一/三 18:00；其餘 21:30（回傳絕對時間）
+  const key = tpeDateKey(d)
+  const dow = new Date(`${key}T12:00:00+08:00`).getUTCDay()
+  const hhmm = (dow === 1 || dow === 3) ? '18:00:00' : '21:30:00'
+  return new Date(`${key}T${hhmm}+08:00`)
+}
+function isSundayTPE(d: Date) { return tpeDow(d) === 0 }
+
 export default function BookingPage() {
   /* ---------------- 基本狀態 ---------------- */
   const now = useMemo(() => {
     const n = new Date()
     const m = n.getMinutes()
     const rounded = new Date(n)
-    // 取下個 30 分鐘刻度
     rounded.setMinutes(m < 30 ? 30 : 0, 0, 0)
     if (m >= 30) rounded.setHours(n.getHours() + 1)
     return rounded
@@ -76,7 +78,7 @@ export default function BookingPage() {
   const [startStr, setStartStr] = useState(fmtLocal(now))
   const start = parseLocal(startStr) || now
 
-  // 台北規則：當日可申請窗口（以 TPE 計）→ 對應到實際瞬間
+  // 台北規則：當日可申請窗口（以 TPE 計）→ 對應到真實瞬間
   const earliest = earliestOfDayTPE(start)
   const dayCap = latestCapTPE(start)
 
@@ -89,12 +91,12 @@ export default function BookingPage() {
   }, [startStr])
 
   // 提示（左邊顯示「台北時間」）
-  const tpeEarliestHM = toTPE(earliest).toTimeString().slice(0,5)
-  const tpeCapHM = toTPE(dayCap).toTimeString().slice(0,5)
-  const singleAllowedTip = `當日可申請時段（台北時間）：${tpeEarliestHM} – ${tpeCapHM}（超出將自動裁切）`
+  const tpeEarliestHM = new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false }).format(earliest)
+  const tpeCapHM = new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false }).format(dayCap)
+  const singleAllowedTip = `當日可申請時段（台北）：${tpeEarliestHM} – ${tpeCapHM}（超出自動裁切）`
   const singleEffectiveTip = `實際送出時段：${start.toLocaleString()} → ${end.toLocaleString()}${end.getTime() < addHours(start,3).getTime() ? '（已裁切）' : ''}`
 
-  // 為了避免 too_early，將 input 的 min 設為「該日台北 07:00 對應到你的本地」
+  // 為避免 too_early，min=「該日台北 07:00」對應到你的本地
   const startMinLocal = fmtLocal(earliest)
 
   /* ---------------- 重複模式 ---------------- */
@@ -111,10 +113,12 @@ export default function BookingPage() {
     const MAX_DAYS = 31
     let cur = new Date(rs), i = 0
     while (cur <= re && i < MAX_DAYS) {
-      // 該天該時刻（使用者的本地），但規則以台北時間判斷
-      const s = parseTimeToDate(cur, repeatTime)
-      if (isSundayTPE(s)) {
+      const s = parseTimeToDate(cur, repeatTime) // 使用者選的每天開始（本地），但規則以台北時間判斷
+      const dow = tpeDow(s)
+      if (dow === 0) {
         items.push({ date: new Date(cur), status: 'skip_sun' })
+      } else if (!repeatWds[dow as 1|2|3|4|5|6]) {
+        // 該星期沒勾選 → 不顯示（要顯示也可標示「未勾選」）
       } else {
         const earl = earliestOfDayTPE(s)
         const cap = latestCapTPE(s)
@@ -133,7 +137,7 @@ export default function BookingPage() {
       cur = next; i++
     }
     return items
-  }, [rangeStart, rangeEnd, repeatTime, repeatWds]) // repeatWds 目前僅示意，每週選擇若要套用可在此過濾
+  }, [rangeStart, rangeEnd, repeatTime, repeatWds])
 
   /* ---------------- 驗證 ---------------- */
   function validateCommon(): string | null {
@@ -148,9 +152,9 @@ export default function BookingPage() {
     if (!s) return '請選擇開始日期時間'
     if (isSundayTPE(s)) return '週日不可申請（以台北時間計）'
     const earl = earliestOfDayTPE(s)
-    if (s.getTime() < earl.getTime()) return '每日最早 07:00（台北時間）'
+    if (s.getTime() < earl.getTime()) return '每日最早 07:00（台北）'
     const cap = latestCapTPE(s)
-    if (s.getTime() >= cap.getTime()) return '開始時間已超過當日上限（台北時間），請改選更早的時間'
+    if (s.getTime() >= cap.getTime()) return '開始時間已超過當日上限（台北），請改選更早時間'
     return null
   }
   function validateRepeat(): string | null {
@@ -158,6 +162,8 @@ export default function BookingPage() {
     const re = new Date(rangeEnd   + 'T23:59:59')
     const days = Math.floor((re.getTime() - rs.getTime())/86400000) + 1
     if (days > 14) return '重複日期最長 2 週'
+    const anyWd = Object.values(repeatWds).some(Boolean)
+    if (!anyWd) return '請至少選擇一個平日或週六'
     return null
   }
 
@@ -339,12 +345,27 @@ export default function BookingPage() {
               </label>
             </div>
 
+            {/* 每週選擇（週日固定禁用） */}
+            <div className="text-sm text-slate-600 mb-1">選擇星期（週日禁用）</div>
+            <div className="flex flex-wrap gap-3 mb-2">
+              {[1,2,3,4,5,6].map(wd => (
+                <label key={wd} className="inline-flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={repeatWds[wd as 1|2|3|4|5|6]}
+                    onChange={e=>setRepeatWds(s=>({...s, [wd]: e.target.checked}))}
+                  />
+                  {['','週一','週二','週三','週四','週五','週六'][wd]}
+                </label>
+              ))}
+            </div>
+
             {/* 重複日期預覽（以台北時間判斷有效性/裁切） */}
             <div className="space-y-2">
-              <div className="text-sm text-slate-600">預覽（超出上限自動裁切；台北周日與開始不在可申請窗口會跳過）</div>
+              <div className="text-sm text-slate-600">預覽（超出上限自動裁切；台北週日與未勾選星期將跳過）</div>
               <div className="rounded-lg border divide-y">
                 {repeatPreview.map((it, idx) => {
-                  const ds = toTPE(it.date).toLocaleDateString(undefined, { year:'numeric', month:'2-digit', day:'2-digit', weekday:'short' })
+                  const ds = new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', year:'numeric', month:'2-digit', day:'2-digit', weekday:'short' }).format(it.date)
                   let badge = '', badgeClass = ''
                   if (it.status === 'ok')        { badge = '可申請';  badgeClass = 'bg-emerald-100 text-emerald-700' }
                   if (it.status === 'cut')       { badge = '裁切';    badgeClass = 'bg-amber-100 text-amber-700' }
@@ -359,7 +380,13 @@ export default function BookingPage() {
                       </div>
                       <div className="text-right text-slate-700">
                         {(it.start && it.end) ? (
-                          <span>{toTPE(it.start).toTimeString().slice(0,5)} → {toTPE(it.end).toTimeString().slice(0,5)}（台北）</span>
+                          <span>
+                            {
+                              new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', hour:'2-digit', minute:'2-digit', hour12:false }).format(it.start)
+                            } → {
+                              new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', hour:'2-digit', minute:'2-digit', hour12:false }).format(it.end)
+                            }（台北）
+                          </span>
                         ) : (
                           <span className="text-slate-500">不送出</span>
                         )}
