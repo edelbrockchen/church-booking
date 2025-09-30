@@ -27,9 +27,9 @@ function parseTimeToDate(baseDate: Date, hhmm: string) {
 }
 function isSunday(d: Date) { return d.getDay() === 0 }
 function latestCap(d: Date) {
+  // 週一 / 週三 最晚 18:00；其餘 21:30
   const day = d.getDay()
   const cap = new Date(d)
-  // 週一 / 週三 最晚 18:00；其餘 21:30
   if (day === 1 || day === 3) cap.setHours(18, 0, 0, 0)
   else cap.setHours(21, 30, 0, 0)
   return cap
@@ -95,7 +95,6 @@ export default function BookingPage() {
     const rs = new Date(rangeStart + 'T00:00:00')
     const re = new Date(rangeEnd + 'T23:59:59')
     const items: PreviewItem[] = []
-    // 安全上限：最多 31 天（理論上你已限制 14 天）
     const MAX_DAYS = 31
     let cur = new Date(rs)
     let i = 0
@@ -110,7 +109,6 @@ export default function BookingPage() {
         if (s.getTime() < earliest.getTime()) {
           items.push({ date: new Date(cur), status: 'too_early' })
         } else if (s.getTime() >= cap.getTime()) {
-          // 開始時間在上限或之後 → 無效
           items.push({ date: new Date(cur), status: 'invalid' })
         } else {
           const targetEnd = addHours(s, 3)
@@ -140,9 +138,9 @@ export default function BookingPage() {
     if (isSunday(s)) return '週日不可申請'
     const earliest = earliestStartOfDay(s)
     if (s.getTime() < earliest.getTime()) return '每日最早 07:00'
-    // 不再擋「開始太晚」，由系統裁切
     const cap = latestCap(s)
     if (s.getTime() >= cap.getTime()) return '開始時間已超過當日上限，請改選更早的時間'
+    // 其餘由系統自動裁切
     return null
   }
   function validateRepeat(): string | null {
@@ -193,7 +191,7 @@ export default function BookingPage() {
         const err = validateRepeat()
         if (err) throw new Error(err)
 
-        // 逐筆送：跳過週日；若開始 >= 當日上限就略過；其餘讓後端自動裁切
+        // 逐筆送：跳過週日與無效時段；其餘讓後端自動裁切
         let count = 0
         for (const it of repeatPreview) {
           if (it.status === 'ok' || it.status === 'cut') {
