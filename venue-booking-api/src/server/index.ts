@@ -26,8 +26,7 @@ app.use(helmet())
 
 // 3) CORS（允許跨網域＋攜帶 Cookie）
 const ALLOWED_ORIGINS = (process.env.CORS_ORIGIN ??
-  'https://venue-booking-frontend-a3ib.onrender.com'
-)
+  'https://venue-booking-frontend-a3ib.onrender.com')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean)
@@ -132,14 +131,10 @@ app.get('/api/csrf', csrfProtection, (req, res) => {
   res.json({ csrfToken: token })
 })
 
-/* ------------------------------ 健康檢查 ------------------------------ */
-const health: RequestHandler = (_req, res) =>
-  res.json({ ok: true, time: new Date().toISOString() })
+// 健康檢查
+app.get('/api/health', (_req, res) => res.json({ ok: true }))
 
-app.get('/api/health', health)
-app.get('/api/status', health) // ← 新增：前端可打這條做探測
-
-/* ------------------------------ Debug 工具 ------------------------------ */
+// Debug：檢視 session
 app.get('/api/debug/session', (req, res) => {
   res.json({
     origin: req.headers.origin,
@@ -149,6 +144,7 @@ app.get('/api/debug/session', (req, res) => {
   })
 })
 
+// Debug：cookie 標頭
 app.get('/api/debug/cookies', (req, res) => {
   res.json({ cookieHeader: req.headers.cookie ?? null })
 })
