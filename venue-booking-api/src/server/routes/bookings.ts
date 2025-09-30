@@ -11,11 +11,29 @@ const pool = makePool()
 
 /* --------------------------- 共用設定 / 型別 --------------------------- */
 
-// 可接受的分類（也可放寬為任意字串）
+// 可接受的分類
 const AllowedCategories = ['教會聚會', '社團活動', '研習', '其他'] as const
 
+// 以台北時間 (UTC+8) 做日界線與上限判斷（避免受伺服器時區影響）
+const TAIPEI_OFFSET_MS = 8 * 60 * 60 * 1000
+function toTaipei(d: Date): Date { return new Date(d.getTime() + TAIPEI_OFFSET_MS) }
+function fromTaipei(d: Date): Date { return new Date(d.getTime() - TAIPEI_OFFSET_MS) }
+function taipeiDay(d: Date): number { return toTaipei(d).getDay() }            // 0=週日
+function taipeiHour(d: Date): number { return toTaipei(d).getHours() }
+function isSunday(d: Date) { return taipeiDay(d) === 0 }
+
+// 依台北時間求「當日最晚結束時間（cap）」：週一/週三 18:00，其餘 21:30
+function latestCap(d: Date): Date {
+  const local = toTaipei(d)
+  const day = local.getDay()
+  const capLocal = new Date(local)
+  if (day === 1 || day === 3) capLocal.setHours(18, 0, 0, 0)     // 週一、週三 18:00
+  else capLocal.setHours(21, 30, 0, 0)                            // 其他日 21:30
+  return fromTaipei(capLocal)                                     // 回到 UTC 時間基準
+}
+
 const createSchema = z.object({
-  start: z.string().datetime(),
+  start: z.string().datetime(),                  // ISO 字串
   // 下列皆為選填；若前端沒傳，後端也會給預設值
   category: z
     .string()
@@ -28,12 +46,6 @@ const createSchema = z.object({
 })
 
 function addHours(d: Date, h: number) { return new Date(d.getTime() + h * 3600_000) }
-function isSunday(d: Date) { return d.getDay() === 0 }
-function latestEnd(d: Date) {
-  const day = d.getDay()
-  // 週一 / 週三 最晚 18:00；其餘 21:30
-  return day === 1 || day === 3 ? { hour: 18, minute: 0 } : { hour: 21, minute: 30 }
-}
 
 // 依你實際的 session 結構調整
 function getUserId(req: Request): string | null {
@@ -76,14 +88,27 @@ bookingsRouter.post('/', async (req, res) => {
   const p = createSchema.safeParse(req.body)
   if (!p.success) return res.status(400).json({ error: 'invalid_payload', details: p.error.issues })
 
+  // 解析開始時間（ISO）
   const start = new Date(p.data.start)
   if (isNaN(start.getTime())) return res.status(400).json({ error: 'invalid_start' })
-  if (isSunday(start)) return res.status(400).json({ error: 'sunday_disabled' })
 
-  // 3 小時原則；一/三最晚 18:00，其餘 21:30，超過則截短
+  // 週日禁用（以台北時間判斷）
+  if (isSunday(start)) return res.status(409).json({ error: 'sunday_disabled' })
+
+  // 每日最早 07:00（以台北時間判斷）
+  if (taipeiHour(start) < 7) return res.status(409).json({ error: 'too_early' })
+
+  // 當日最晚結束時間（以台北時間）
+  const cap = latestCap(start)
+
+  // 「最晚可開始」= cap - 3h；允許剛好等於邊界
+  const latestStart = addHours(cap, -3)
+  if (start.getTime() > latestStart.getTime()) {
+    return res.status(409).json({ error: 'too_late' })
+  }
+
+  // 預設 3 小時；若超過上限就截斷
   const targetEnd = addHours(start, 3)
-  const { hour, minute } = latestEnd(start)
-  const cap = new Date(start); cap.setHours(hour, minute, 0, 0)
   const end = targetEnd.getTime() > cap.getTime() ? cap : targetEnd
   const truncated = end.getTime() < targetEnd.getTime()
 
