@@ -159,11 +159,7 @@ bookingsRouter.post('/', async (req, res) => {
 })
 
 /* --------------------------- 列表：全部 --------------------------- */
-// 列表（全部）—— 只允許管理者
-bookingsRouter.get('/', async (req, res) => {
-  // ✅ 必須是管理者
-  if (!isAdmin(req)) return res.status(403).json({ error: 'forbidden' })
-
+bookingsRouter.get('/', async (_req, res) => {
   if (!pool) return res.json({ items: [] })
   const { rows } = await pool.query(
     `
