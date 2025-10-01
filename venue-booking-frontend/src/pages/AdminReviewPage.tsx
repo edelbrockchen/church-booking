@@ -37,6 +37,10 @@ function parseContact(note?: string | null) {
   }
 }
 
+function overlap(aStart: Date, aEnd: Date, bStart: Date, bEnd: Date) {
+  return aStart < bEnd && aEnd > bStart
+}
+
 export default function AdminReviewPage() {
   // --- 登入/資料 ---
   const [authed, setAuthed] = useState(false)
@@ -44,14 +48,15 @@ export default function AdminReviewPage() {
   const [items, setItems] = useState<Item[]>([])
   const [error, setError] = useState<string>('')
 
-  // 後端狀態參數（沿用你的 API）
+  // 後端只打「全部」，前端再做狀態/場地等過濾
   const [status, setStatus] = useState<StatusFilter>('all')
-
-  // 額外前端過濾/控制
   const [venue, setVenue] = useState<VenueFilter>('all')
   const [q, setQ] = useState('')
   const [showPast, setShowPast] = useState(true)
   const [auto, setAuto] = useState(false)
+
+  // 勾選（僅允許勾 pending）
+  const [selected, setSelected] = useState<Set<string>>(new Set())
 
   // 登入表單
   const [username, setUsername] = useState('')
@@ -69,24 +74,22 @@ export default function AdminReviewPage() {
         body: JSON.stringify({ username, password }),
       })
       setAuthed(true)
-      setUsername('')
-      setPassword('')
-      setError('')
+      setUsername(''); setPassword(''); setError('')
     } catch {
       setLoginMsg('登入失敗，請檢查帳號/密碼')
       setAuthed(false)
     }
   }
 
-  // 讀取列表（僅在已登入時）
+  // 讀取「全部（近 60 天）」列表（僅在已登入時）
   async function load() {
     if (!authed) return
-    setLoading(true)
-    setError('')
+    setLoading(true); setError('')
     try {
-      const qs = status === 'all' ? '' : `?status=${status}`
-      const j = await apiFetch(`/api/admin/review${qs}`)
+      const j = await apiFetch('/api/admin/review') // ← 只打一次全量
       setItems(j.items || [])
+      // 重新整理時清掉已不在列表的勾選
+      setSelected(sel => new Set(Array.from(sel).filter(id => (j.items || []).some((x: Item) => x.id === id && x.status === 'pending'))))
     } catch (e: any) {
       setItems([])
       setError(e?.message || '載入失敗')
@@ -95,7 +98,7 @@ export default function AdminReviewPage() {
     }
   }
 
-  useEffect(() => { load() }, [authed, status]) // 登入/狀態變更時打後端
+  useEffect(() => { load() }, [authed])
   useEffect(() => {
     if (!auto || !authed) return
     const t = setInterval(load, 20000)
@@ -115,17 +118,39 @@ export default function AdminReviewPage() {
     return (['all' as const, ...ordered]) as VenueFilter[]
   }, [items])
 
-  // 統計
+  // 已核准索引（做衝突判斷）
+  const approvedByVenue = useMemo(() => {
+    const map = new Map<string, Item[]>()
+    for (const it of items) {
+      if (it.status !== 'approved') continue
+      const v = it.venue ?? parseContact(it.note).venue
+      if (!v) continue
+      const list = map.get(v) ?? []
+      list.push(it); map.set(v, list)
+    }
+    return map
+  }, [items])
+
+  function hasConflict(x: Item) {
+    const v = x.venue ?? parseContact(x.note).venue
+    if (!v || v === '其它教室') return false // 其它教室允許重疊
+    const approved = approvedByVenue.get(v) || []
+    const xs = new Date(x.start_ts), xe = new Date(x.end_ts)
+    return approved.some(a => overlap(xs, xe, new Date(a.start_ts), new Date(a.end_ts)))
+  }
+
+  // 小統計（依目前完整 items）
   const stats = useMemo(() => {
     const s: Record<NonNullable<Item['status']>, number> = { pending: 0, approved: 0, rejected: 0, cancelled: 0 }
     for (const it of items) s[it.status] = (s[it.status] ?? 0) + 1
     return s
   }, [items])
 
-  // 前端過濾（顯示已結束、場地、搜尋）
+  // 前端過濾（狀態/已結束/場地/搜尋）
   const filtered = useMemo(() => {
     const now = new Date()
     return items
+      .filter(it => status === 'all' ? true : it.status === status)
       .filter(it => showPast ? true : new Date(it.end_ts) >= now)
       .filter(it => {
         if (venue === 'all') return true
@@ -136,38 +161,52 @@ export default function AdminReviewPage() {
         if (!q.trim()) return true
         const c = parseContact(it.note)
         const hay = [
-          it.created_by ?? '',
-          it.category ?? '',
-          it.note ?? '',
+          it.created_by ?? '', it.category ?? '', it.note ?? '',
           c.venue, c.name, c.email, c.phone,
         ].join(' ').toLowerCase()
         return hay.includes(q.toLowerCase())
       })
       .sort((a, b) => new Date(a.start_ts).getTime() - new Date(b.start_ts).getTime())
-  }, [items, showPast, venue, q])
+  }, [items, status, showPast, venue, q])
 
   // 動作：核准/退回（只在登入後）
   async function approve(id: string) {
     if (!authed) return
     try {
       await apiFetch(`/api/admin/bookings/${id}/approve`, { method: 'POST' })
-      load()
-    } catch (e) { alert('核准失敗'); console.error(e) }
+    } catch (e) { console.error(e) }
   }
-  async function reject(id: string) {
+  async function reject(id: string, reason: string) {
     if (!authed) return
-    const reason = prompt('請輸入退回原因（可留空）') ?? ''
     try {
       await apiFetch(`/api/admin/bookings/${id}/reject`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason }),
       })
-      load()
-    } catch (e) { alert('退回失敗'); console.error(e) }
+    } catch (e) { console.error(e) }
   }
 
-  // 匯出 CSV（匯出目前篩選後清單）
+  // 批次
+  async function batchApprove() {
+    if (selected.size === 0) return
+    const ids = Array.from(selected)
+    setLoading(true)
+    for (const id of ids) await approve(id)
+    setSelected(new Set())
+    await load()
+  }
+  async function batchReject() {
+    if (selected.size === 0) return
+    const reason = prompt('請輸入退回原因（可留空）') ?? ''
+    setLoading(true)
+    const ids = Array.from(selected)
+    for (const id of ids) await reject(id, reason)
+    setSelected(new Set())
+    await load()
+  }
+
+  // 匯出 CSV（匯出目前「過濾後」清單）
   function exportCSV() {
     const header = ['id','開始(台北)','結束(台北)','狀態','場地','分類','申請人','Email','電話','建立時間(台北)','退回理由','備註原文']
     const lines = [header]
@@ -201,6 +240,24 @@ export default function AdminReviewPage() {
     const s = String(v ?? '')
     return /[,"\n]/.test(s) ? `"${s.replaceAll('"','""')}"` : s
   }
+
+  // 勾選控制
+  function toggleOne(id: string, enabled: boolean) {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (enabled) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }
+  function toggleAllVisiblePending(checked: boolean) {
+    if (!checked) { setSelected(new Set()); return }
+    const ids = filtered.filter(x => x.status === 'pending').map(x => x.id)
+    setSelected(new Set(ids))
+  }
+  const allVisiblePendingSelected =
+    filtered.filter(x => x.status === 'pending').every(x => selected.has(x.id)) &&
+    filtered.some(x => x.status === 'pending')
 
   return (
     <div className="max-w-6xl mx-auto p-4 space-y-6">
@@ -275,6 +332,19 @@ export default function AdminReviewPage() {
               <Badge color="rose">已退回 {stats.rejected}</Badge>
               <Badge color="slate">已取消 {stats.cancelled}</Badge>
             </div>
+
+            {/* 批次動作列 */}
+            {selected.size > 0 && (
+              <div className="flex items-center gap-2 text-sm">
+                <span className="text-slate-600">已選 {selected.size} 筆（僅限待審）</span>
+                <button onClick={batchApprove} className="rounded bg-emerald-600 px-3 py-1.5 text-white disabled:opacity-50" disabled={loading}>
+                  批次核准
+                </button>
+                <button onClick={batchReject} className="rounded bg-rose-600 px-3 py-1.5 text-white disabled:opacity-50" disabled={loading}>
+                  批次退回
+                </button>
+              </div>
+            )}
           </div>
 
           {/* 錯誤訊息 */}
@@ -282,9 +352,17 @@ export default function AdminReviewPage() {
 
           {/* 清單 */}
           <div className="rounded-xl border overflow-x-auto bg-white">
-            <table className="min-w-[980px] w-full text-sm">
+            <table className="min-w-[1100px] w-full text-sm">
               <thead className="bg-slate-50">
                 <tr className="text-left">
+                  <th className="px-3 py-2 w-10">
+                    <input
+                      type="checkbox"
+                      checked={allVisiblePendingSelected}
+                      onChange={e => toggleAllVisiblePending(e.target.checked)}
+                      title="全選（僅可選待審）"
+                    />
+                  </th>
                   <th className="px-3 py-2">狀態</th>
                   <th className="px-3 py-2">時間（台北）</th>
                   <th className="px-3 py-2">場地 / 分類</th>
@@ -300,16 +378,34 @@ export default function AdminReviewPage() {
                   const c = parseContact(x.note)
                   const venueShow = x.venue ?? c.venue ?? '（未填）'
                   const isPending = x.status === 'pending'
+                  const conflict = isPending && hasConflict(x)
                   const badge =
                     x.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
                     x.status === 'rejected' ? 'bg-rose-100 text-rose-700' :
                     x.status === 'cancelled' ? 'bg-slate-200 text-slate-600' :
                     'bg-amber-100 text-amber-700'
+
                   return (
                     <tr key={x.id} className="border-t">
                       <td className="px-3 py-2">
-                        <span className={`px-2 py-0.5 rounded ${badge}`}>{x.status}</span>
-                        {x.rejection_reason && <div className="text-rose-600 mt-1">{x.rejection_reason}</div>}
+                        <input
+                          type="checkbox"
+                          disabled={!isPending}
+                          checked={selected.has(x.id)}
+                          onChange={e => toggleOne(x.id, e.target.checked)}
+                          title={isPending ? '選取以進行批次操作' : '僅待審可勾選'}
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="flex flex-col gap-1">
+                          <span className={`px-2 py-0.5 rounded w-fit ${badge}`}>{x.status}</span>
+                          {x.rejection_reason && <div className="text-rose-600">{x.rejection_reason}</div>}
+                          {conflict && (
+                            <div className="text-xs px-2 py-0.5 rounded w-fit bg-rose-100 text-rose-700">
+                              與已核准衝突
+                            </div>
+                          )}
+                        </div>
                       </td>
                       <td className="px-3 py-2">
                         <div>{fmtDT(s)} → {fmtDT(e)}</div>
@@ -328,8 +424,19 @@ export default function AdminReviewPage() {
                       <td className="px-3 py-2 text-right">
                         {isPending ? (
                           <div className="inline-flex gap-2">
-                            <button onClick={() => approve(x.id)} className="rounded bg-emerald-600 px-3 py-1.5 text-white">核准</button>
-                            <button onClick={() => reject(x.id)} className="rounded bg-rose-600 px-3 py-1.5 text-white">退回</button>
+                            <button
+                              onClick={async () => { await approve(x.id); await load() }}
+                              className="rounded bg-emerald-600 px-3 py-1.5 text-white">
+                              核准
+                            </button>
+                            <button
+                              onClick={async () => {
+                                const reason = prompt('請輸入退回原因（可留空）') ?? ''
+                                await reject(x.id, reason); await load()
+                              }}
+                              className="rounded bg-rose-600 px-3 py-1.5 text-white">
+                              退回
+                            </button>
                           </div>
                         ) : <span className="text-slate-400">—</span>}
                       </td>
@@ -338,7 +445,7 @@ export default function AdminReviewPage() {
                 })}
                 {!loading && filtered.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="py-6 text-center text-slate-500">沒有符合條件的項目</td>
+                    <td colSpan={7} className="py-6 text-center text-slate-500">沒有符合條件的項目</td>
                   </tr>
                 )}
               </tbody>

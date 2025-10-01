@@ -7,9 +7,16 @@ import { makePool } from '../db'
 export const adminRouter = Router()
 const pool = makePool()
 
-/* --------------------------- Admin 使用者載入 --------------------------- */
-/** 從 ADMIN_USERS_JSON 載入：{ "username": "<bcrypt-hash>", ... } */
-function loadAdminUsers(): Record<string, string> {
+/* ───────────────────────── Admin 使用者載入 ────────────────────────── */
+/**
+ * 方式一（建議）：ADMIN_USERS_JSON（username → bcrypt-hash）
+ *   例如：
+ *   {
+ *     "pastor": "$2a$10$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+ *     "staff":  "$2a$10$yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+ *   }
+ */
+function loadAdminUsersFromJson(): Record<string, string> {
   const raw = process.env.ADMIN_USERS_JSON
   if (!raw) return {}
   try {
@@ -20,12 +27,16 @@ function loadAdminUsers(): Record<string, string> {
   }
   return {}
 }
-const adminUsers = loadAdminUsers()
+const adminUsersJson = loadAdminUsersFromJson()
 
-/** （相容舊版）共用明文密碼；若不需要可移除 ADMIN_PASSWORD 環境變數 */
+/** 方式二：ADMIN_USER + ADMIN_PASS（明文，單一帳號） */
+const singleUser = process.env.ADMIN_USER
+const singlePass = process.env.ADMIN_PASS
+
+/** 方式三（相容舊版）：ADMIN_PASSWORD（共用密碼，沒有帳號概念） */
 const fallbackPassword = process.env.ADMIN_PASSWORD ?? ''
 
-/* ----------------------------- 中介層：權限 ----------------------------- */
+/* ─────────────────────────── 權限保護 ─────────────────────────── */
 function ensureAdmin(req: Request, res: Response, next: NextFunction) {
   const user = (req as any).session?.user
   if (!user || user.role !== 'admin') {
@@ -40,14 +51,14 @@ function ensureAdmin(req: Request, res: Response, next: NextFunction) {
   next()
 }
 
-/* ------------------------------ 認證相關 API ------------------------------ */
+/* ─────────────────────────── 認證相關 API ─────────────────────────── */
 // 目前登入者
 adminRouter.get('/me', (req, res) => {
   const user = (req as any).session?.user ?? null
   res.json({ user })
 })
 
-// 登入（bcrypt + regenerate → set user → save）
+// 登入：支援三種配置來源（JSON / 單一帳密 / 共用密碼）
 adminRouter.post('/login', async (req, res) => {
   const schema = z.object({
     username: z.string().min(1),
@@ -58,35 +69,46 @@ adminRouter.post('/login', async (req, res) => {
 
   const { username, password } = p.data
 
-  // 先比對使用者專屬 bcrypt；若沒有，再回退共用密碼（如仍保留）
-  const hash = adminUsers[username]
   let ok = false
+  let displayName = username
 
+  // 1) 先試 JSON（每人一把 bcrypt）
+  const hash = adminUsersJson[username]
   if (typeof hash === 'string' && hash.length > 0) {
     try {
       ok = await bcrypt.compare(password, hash)
     } catch (e) {
-      console.error('[admin][login] bcrypt error:', e)
+      console.error('[admin][login] bcrypt compare error:', e)
       return res.status(500).json({ error: 'server_error' })
     }
-  } else if (fallbackPassword) {
-    ok = password === fallbackPassword
   }
 
-  if (!ok) return res.status(401).json({ error: 'invalid_credentials' })
+  // 2) 若 JSON 不存在，再試單一帳密
+  if (!ok && singleUser && singlePass) {
+    if (username === singleUser && password === singlePass) ok = true
+  }
 
-  // ✅ 關鍵：重生 session（防固定攻擊）→ 設 user → 保存後回覆
+  // 3) 最後回退共用密碼（相容舊版）
+  if (!ok && fallbackPassword) {
+    ok = password === fallbackPassword
+    // 共用密碼沒有帳號概念，固定顯示名稱
+    if (ok) displayName = 'admin'
+  }
+
+  if (!ok) {
+    return res.status(401).json({ error: 'invalid_credentials' })
+  }
+
+  // ✅ 重生 session（防固定攻擊）→ 設 user → 保存（讓 Set-Cookie 寫出）
   ;(req as any).session.regenerate((regenErr: any) => {
     if (regenErr) {
-      console.error('[admin][login] regenerate error:', regenErr)
+      console.error('[admin][login] session regenerate error:', regenErr)
       return res.status(500).json({ error: 'server_error' })
     }
-
-    ;(req as any).session.user = { id: `admin:${username}`, role: 'admin', name: username }
-
+    ;(req as any).session.user = { id: `admin:${displayName}`, role: 'admin', name: displayName }
     ;(req as any).session.save((saveErr: any) => {
       if (saveErr) {
-        console.error('[admin][login] save error:', saveErr)
+        console.error('[admin][login] session save error:', saveErr)
         return res.status(500).json({ error: 'server_error' })
       }
       return res.json({ ok: true })
@@ -96,12 +118,12 @@ adminRouter.post('/login', async (req, res) => {
 
 // 登出
 adminRouter.post('/logout', (req, res) => {
-  (req as any).session?.destroy?.(() => {})
+  ;(req as any).session?.destroy?.(() => {})
   res.json({ ok: true })
 })
 
-/* ------------------------------ 審核相關 API ------------------------------ */
-// 近 60 天申請（可選 status 篩選）
+/* ─────────────────────────── 審核相關 API ─────────────────────────── */
+// 近 60 天申請（可用 ?status=pending|approved|rejected 篩）
 adminRouter.get('/review', ensureAdmin, async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'db_unavailable' })
 
@@ -113,7 +135,7 @@ adminRouter.get('/review', ensureAdmin, async (req, res) => {
     const { rows } = await pool.query(
       `
       SELECT id, start_ts, end_ts, created_at, created_by, status,
-             reviewed_at, reviewed_by, rejection_reason, category, note
+             reviewed_at, reviewed_by, rejection_reason, category, note, venue
       FROM bookings
       WHERE created_at >= now() - interval '60 days'
         ${hasStatus ? `AND status = $1` : ``}
