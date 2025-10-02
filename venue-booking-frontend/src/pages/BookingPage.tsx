@@ -184,11 +184,11 @@ export default function BookingPage() {
           note: fullNote,
           ...(category ? { category } : {})
         }
-        const r = const r = await apiFetch('/api/bookings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-        if (!r.ok) {
-          const j = await r.json().catch(() => null)
-          throw new Error(JSON.stringify(j || { error: `HTTP ${r.status}` }))
-        }
+        const r = await apiFetch('/api/bookings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        })
         if (!r.ok) {
           const j = await r.json().catch(() => null)
           throw new Error(JSON.stringify(j || { error: `HTTP ${r.status}` }))
@@ -208,15 +208,15 @@ export default function BookingPage() {
               note: fullNote,
               ...(category ? { category } : {})
             }
-            const r = const r = await apiFetch('/api/bookings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-        if (!r.ok) {
-          const j = await r.json().catch(() => null)
-          throw new Error(JSON.stringify(j || { error: `HTTP ${r.status}` }))
-        }
-        if (!r.ok) {
-          const j = await r.json().catch(() => null)
-          throw new Error(JSON.stringify(j || { error: `HTTP ${r.status}` }))
-        }
+            const rr = await apiFetch('/api/bookings', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            })
+            if (!rr.ok) {
+              const j = await rr.json().catch(() => null)
+              throw new Error(JSON.stringify(j || { error: `HTTP ${rr.status}` }))
+            }
             count++
           }
         }
@@ -326,7 +326,7 @@ export default function BookingPage() {
         </div>
       </div>
 
-      {/* 其他設定（移到前面；申請原因改為必填） */}
+      {/* 其他設定 */}
       <div className="rounded-xl border p-4 space-y-4">
         <h3 className="font-semibold">其他設定</h3>
         <div className="grid md:grid-cols-2 gap-4">
@@ -356,7 +356,7 @@ export default function BookingPage() {
         </div>
       </div>
 
-      {/* 日期與時間（移到後面） */}
+      {/* 日期與時間 */}
       <div className="rounded-xl border p-4 space-y-4">
         <h3 className="font-semibold">日期與時間</h3>
 
