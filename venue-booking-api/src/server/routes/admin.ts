@@ -75,7 +75,7 @@ adminRouter.post('/login', async (req, res) => {
 
   if (!ok) return res.status(401).json({ error: 'invalid_credentials' })
 
-  // ✅ 關鍵：重生 session（防固定攻擊）→ 設 user → 保存後回覆
+  // ✅ 重生 session（防 session fixation）→ 設 user → 保存
   ;(req as any).session.regenerate((regenErr: any) => {
     if (regenErr) {
       console.error('[admin][login] regenerate error:', regenErr)
