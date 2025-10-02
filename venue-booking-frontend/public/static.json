@@ -1,8 +1,8 @@
 {
   "redirects": [
     {
-      "source": "/api/*",
-      "destination": "https://venue-booking-api-rjes.onrender.com/api/:splat",
+      "source": "/api/(.*)",
+      "destination": "https://venue-booking-api-rjes.onrender.com/api/$1",
       "status": 200
     }
   ]
