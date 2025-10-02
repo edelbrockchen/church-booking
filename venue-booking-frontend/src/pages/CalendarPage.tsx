@@ -111,7 +111,7 @@ function extractReason(note?: string | null) {
 
 /* ====== 主元件 ====== */
 export default function CalendarPage({ apiBase }: Props) {
-  const API_BASE = (apiBase ?? ENV_API_BASE ?? '').replace(/\/+$/, '') // 去尾斜線，避免 //api
+  const API_BASE = (apiBase ?? import.meta.env.VITE_API_BASE ?? '').replace(/\/+$/, '') // 去尾斜線，避免 //api
   const now = new Date()
   const [mode, setMode] = useState<ViewMode>('month')
   const [month, setMonth] = useState<MonthKey>({ y: now.getFullYear(), m: now.getMonth() })
