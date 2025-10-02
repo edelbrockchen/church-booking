@@ -1,9 +1,9 @@
+// src/pages/CalendarPage.tsx
 import React, { useEffect, useMemo, useState } from 'react'
+import { apiGet } from '../web/lib/api'
 
 /** 從 props 接 apiBase，沒有則回退到環境變數（本地可為空字串→走 Vite 代理） */
 type Props = { apiBase?: string }
-
-const ENV_API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
 /** 後端回傳格式（保持相容：category / note 可能不存在） */
 type ApprovedItem = {
@@ -99,6 +99,16 @@ function catStyle(category?: string | null) {
   return CATEGORY_STYLE[category] ?? CATEGORY_STYLE.default
 }
 
+/** 從 note 萃取「申請原因」：移除像 [場地:][姓名:][Email:][電話:] 這類方括號資訊 */
+function extractReason(note?: string | null) {
+  if (!note) return ''
+  // 先移除所有 [xxx:yyy] 標籤
+  let s = note.replace(/\[[^\]]+\]/g, '').trim()
+  // 壓掉多餘空白
+  s = s.replace(/\s+/g, ' ').trim()
+  return s
+}
+
 /* ====== 主元件 ====== */
 export default function CalendarPage({ apiBase }: Props) {
   const API_BASE = (apiBase ?? ENV_API_BASE ?? '').replace(/\/+$/, '') // 去尾斜線，避免 //api
@@ -120,18 +130,8 @@ export default function CalendarPage({ apiBase }: Props) {
     ;(async () => {
       setLoading(true); setErr(null)
       try {
-        // 你後端若路由不同（例如 /api/bookings），請在這裡對齊
-        const url = `${API_BASE}/api/bookings/approved`
-        // 逾時保護（8 秒）
-        const t = setTimeout(() => ac.abort('timeout'), 8000)
-        const r = await fetch(url, {
-          credentials: 'include', // 若後端用 Session/Cookie 必須帶上
-          headers: { 'Accept': 'application/json' },
-          signal: ac.signal,
-        })
-        clearTimeout(t)
-        if (!r.ok) throw new Error(`HTTP ${r.status}`)
-        const j = await r.json()
+        // 統一改用共享 API 工具（自帶 credentials 與 Base URL）
+        const j = await apiGet('/api/bookings/approved')
         if (mounted) setItems(Array.isArray(j.items) ? j.items : Array.isArray(j) ? j : [])
       } catch (e: any) {
         // fetch TypeError / abort 多半是 CORS、HTTPS 混合內容或網路中斷
@@ -260,7 +260,7 @@ export default function CalendarPage({ apiBase }: Props) {
               <div><span className="text-slate-500">時間：</span>{fmtTime(active.start)}–{fmtTime(active.end)}</div>
               <div><span className="text-slate-500">申請人：</span>{active.created_by || '—'}</div>
               <div><span className="text-slate-500">分類：</span>{active.category || 'default'}</div>
-              {active.note && <div><span className="text-slate-500">備註：</span>{active.note}</div>}
+              <div><span className="text-slate-500">申請原因：</span>{extractReason(active.note) || '（未填）'}</div>
             </div>
             <div className="mt-4 text-right">
               <button className="btn-ghost" onClick={()=>setActive(null)}>關閉</button>
@@ -307,15 +307,16 @@ function MonthView({
             <div className="mt-1 space-y-1">
               {list.slice(0,4).map(ev=>{
                 const st = catStyle(ev.category)
+                const reason = extractReason(ev.note) || '（未填原因）'
                 return (
                   <button
                     key={`${ev.id}-${ev.start.toISOString()}`}
                     className={`w-full text-left truncate rounded-md px-2 py-1 text-xs ${st.chip}`}
                     onClick={()=>onPick(ev)}
-                    title={`${fmtTime(ev.start)}–${fmtTime(ev.end)}`}
+                    title={`${fmtTime(ev.start)} · ${reason}`}
                   >
                     <span className={`inline-block size-2 rounded-full mr-1 align-middle ${st.dot}`} />
-                    {fmtTime(ev.start)}–{fmtTime(ev.end)}
+                    {fmtTime(ev.start)} · {reason}
                   </button>
                 )
               })}
@@ -355,15 +356,16 @@ function WeekView({
             <div className="space-y-1">
               {list.map(ev=>{
                 const st = catStyle(ev.category)
+                const reason = extractReason(ev.note) || '（未填原因）'
                 return (
                   <button
                     key={`${ev.id}-${ev.start.toISOString()}`}
                     className={`w-full text-left truncate rounded-md px-2 py-1 text-xs ${st.chip}`}
                     onClick={()=>onPick(ev)}
-                    title={`${fmtTime(ev.start)}–${fmtTime(ev.end)}`}
+                    title={`${fmtTime(ev.start)} · ${reason}`}
                   >
                     <span className={`inline-block size-2 rounded-full mr-1 align-middle ${st.dot}`} />
-                    {fmtTime(ev.start)}–{fmtTime(ev.end)} {ev.category ? `· ${ev.category}` : ''}
+                    {fmtTime(ev.start)} · {reason}
                   </button>
                 )
               })}
@@ -391,17 +393,16 @@ function DayView({
       <div className="space-y-1">
         {list.map(ev=>{
           const st = catStyle(ev.category)
+          const reason = extractReason(ev.note) || '（未填原因）'
           return (
             <button
               key={`${ev.id}-${ev.start.toISOString()}`}
               className={`w-full text-left truncate rounded-md px-3 py-2 text-sm ${st.chip}`}
               onClick={()=>onPick(ev)}
-              title={`${fmtTime(ev.start)}–${fmtTime(ev.end)}`}
+              title={`${fmtTime(ev.start)} · ${reason}`}
             >
               <span className={`inline-block size-2 rounded-full mr-2 align-middle ${st.dot}`} />
-              {fmtTime(ev.start)}–{fmtTime(ev.end)}
-              {ev.category ? ` · ${ev.category}` : ''}
-              {ev.created_by ? ` · ${ev.created_by}` : ''}
+              {fmtTime(ev.start)} · {reason}
             </button>
           )
         })}
