@@ -1,17 +1,19 @@
-// src/agree.ts
+// src/web/agree.ts
+import { apiFetch } from './lib/api'
+
 export async function recordAgreementOnServer() {
   try {
-    await fetch('/api/terms/accept', {
+    await apiFetch('/api/terms/accept', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
+      // apiFetch 已內建 credentials: 'include'
     })
   } catch {}
 }
 
 export async function fetchAgreementFromServer(): Promise<boolean> {
   try {
-    const r = await fetch('/api/terms/status', { credentials: 'include' })
+    const r = await apiFetch('/api/terms/status')
     if (!r.ok) return false
     const j = await r.json()
     return !!j?.accepted
