@@ -184,11 +184,15 @@ export default function BookingPage() {
           note: fullNote,
           ...(category ? { category } : {})
         }
-        await apiFetch('/api/bookings', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        })
+        const r = const r = await apiFetch('/api/bookings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+        if (!r.ok) {
+          const j = await r.json().catch(() => null)
+          throw new Error(JSON.stringify(j || { error: `HTTP ${r.status}` }))
+        }
+        if (!r.ok) {
+          const j = await r.json().catch(() => null)
+          throw new Error(JSON.stringify(j || { error: `HTTP ${r.status}` }))
+        }
         setResultMsg('已送出 1 筆申請，等待管理者審核')
       } else {
         const err = validateRepeat()
@@ -204,11 +208,15 @@ export default function BookingPage() {
               note: fullNote,
               ...(category ? { category } : {})
             }
-            await apiFetch('/api/bookings', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload)
-            })
+            const r = const r = await apiFetch('/api/bookings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+        if (!r.ok) {
+          const j = await r.json().catch(() => null)
+          throw new Error(JSON.stringify(j || { error: `HTTP ${r.status}` }))
+        }
+        if (!r.ok) {
+          const j = await r.json().catch(() => null)
+          throw new Error(JSON.stringify(j || { error: `HTTP ${r.status}` }))
+        }
             count++
           }
         }

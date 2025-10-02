@@ -113,7 +113,7 @@ adminRouter.get('/review', ensureAdmin, async (req, res) => {
     const { rows } = await pool.query(
       `
       SELECT id, start_ts, end_ts, created_at, created_by, status,
-             reviewed_at, reviewed_by, rejection_reason, category, note
+             reviewed_at, reviewed_by, rejection_reason, category, note, venue
       FROM bookings
       WHERE created_at >= now() - interval '60 days'
         ${hasStatus ? `AND status = $1` : ``}

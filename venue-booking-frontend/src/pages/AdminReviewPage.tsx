@@ -1,6 +1,6 @@
 // src/pages/AdminReviewPage.tsx
 import React, { useEffect, useMemo, useState } from 'react'
-import { apiFetch } from '../web/lib/api'
+import { apiFetch, apiGet } from '../web/lib/api'
 
 type Item = {
   id: string
@@ -85,7 +85,9 @@ export default function AdminReviewPage() {
     setError('')
     try {
       const qs = status === 'all' ? '' : `?status=${status}`
-      const j = await apiFetch(`/api/admin/review${qs}`)
+      const r = await apiFetch(`/api/admin/review${qs}`)
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const j = await r.json()
       setItems(j.items || [])
     } catch (e: any) {
       setItems([])

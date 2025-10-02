@@ -12,7 +12,7 @@ export default function AdminLoginPage() {
     setMsg('')
     setLoading(true)
     try {
-      const r = await apiFetch('/api/admin/login', {
+      const r = const r = const r = await apiFetch('/api/admin/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
