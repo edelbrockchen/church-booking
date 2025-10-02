@@ -165,6 +165,20 @@ if (pool) {
 app.use('/api/bookings', bookingsRouter)
 app.use('/api/admin', adminRouter)
 
+app.get('/api/debug/terms', async (req, res) => {
+  const pool = makePool()
+  const user = (req as any).session?.user
+  let row = null
+  try {
+    if (pool && user?.id) {
+      const r = await pool.query('SELECT accepted_at FROM terms_acceptances WHERE user_id=$1', [user.id])
+      row = r.rows[0] || null
+    }
+  } catch {}
+  res.set('Cache-Control','no-store')
+  res.json({ user, terms: row })
+})
+
 /* -------- /api 兜底 404（放在所有 /api 路由之後） -------- */
 app.use('/api', (_req, res) => {
   res.status(404).json({ error: 'api_not_found' })

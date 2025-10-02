@@ -3,13 +3,12 @@
   "version": "1.3.1",
   "private": true,
   "type": "commonjs",
-   "scripts": {
+  "scripts": {
     "build": "tsc -p tsconfig.server.json",
     "start": "node dist/server/index.js",
     "dev": "tsx watch src/server/index.ts",
     "typecheck": "tsc -p tsconfig.server.json --noEmit",
-    "migrate": "node dist/server/migrate.js",
-    "start:with-migrate": "npm run build && npm run migrate && npm run start"
+    "migrate": "node dist/server/migrate.js"
   },
   "engines": {
     "node": ">=20 <23"

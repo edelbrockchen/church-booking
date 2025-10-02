@@ -95,7 +95,18 @@ bookingsRouter.post('/', async (req, res) => {
 
     // 需先同意條款
     const has = await c.query('SELECT 1 FROM terms_acceptances WHERE user_id=$1 LIMIT 1', [userId])
-    if (has.rowCount === 0) return res.status(403).json({ error: 'must_accept_terms' })
+    if (has.rowCount === 0) {
+      const ALLOW_GUEST_TERMS = (process.env.ALLOW_GUEST_TERMS ?? 'true').toLowerCase() === 'true'
+      if (ALLOW_GUEST_TERMS) {
+        await c.query(`
+          INSERT INTO terms_acceptances (user_id, accepted_at)
+          VALUES ($1, now())
+          ON CONFLICT (user_id) DO UPDATE SET accepted_at = EXCLUDED.accepted_at
+        `, [userId])
+      } else {
+        return res.status(403).json({ error: 'must_accept_terms' })
+      }
+    }
 
     await c.query('BEGIN')
 
