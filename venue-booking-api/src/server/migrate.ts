@@ -15,6 +15,15 @@ async function main() {
     // 1) extension
     await c.query('CREATE EXTENSION IF NOT EXISTS btree_gist;')
 
+    // 3) terms_acceptances（記錄同意條款）
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS terms_acceptances (
+        user_id     VARCHAR(100) PRIMARY KEY,
+        accepted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `)
+
+
     // 2) bookings 表（含完整欄位）
     await c.query(
       [
