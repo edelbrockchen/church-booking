@@ -1,6 +1,6 @@
 // src/web/components/TermsGateModal.tsx
 import { useEffect, useRef, useState } from 'react'
-import { apiFetch } from '../lib/api'
+import { recordAgreementOnServer, setAgreedLocal } from '../agree'
 
 type Props = {
   open: boolean
@@ -12,46 +12,9 @@ export default function TermsGateModal({ open, onClose, onAgreed }: Props) {
   const [submitting, setSubmitting] = useState(false)
   const agreeBtnRef = useRef<HTMLButtonElement | null>(null)
 
-  // 開啟時聚焦同意按鈕
   useEffect(() => {
-    if (!open) return
-    agreeBtnRef.current?.focus()
+    if (open) agreeBtnRef.current?.focus()
   }, [open])
-
-  // 開啟時允許 Esc 關閉
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
-
-  // 開啟時鎖住 body 捲動
-  useEffect(() => {
-    if (!open) return
-    const prev = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => { document.body.style.overflow = prev }
-  }, [open])
-
-  async function recordAgreementOnServer() {
-    try {
-      await apiFetch('/api/terms/accept', { method: 'POST' })
-    } catch (e) {
-      // 容錯：後端暫時失敗也不阻擋
-      console.error('[TermsGate] recordAgreementOnServer failed', e)
-    }
-  }
-
-  function setAgreedLocal() {
-    try {
-      localStorage.setItem('termsAccepted', 'true')
-    } catch {
-      /* ignore */
-    }
-  }
 
   async function agree() {
     if (submitting) return
@@ -59,67 +22,30 @@ export default function TermsGateModal({ open, onClose, onAgreed }: Props) {
     try {
       setAgreedLocal()
       await recordAgreementOnServer()
+      onAgreed()
     } finally {
       setSubmitting(false)
-      onAgreed()
     }
   }
 
-  // 注意：早退 return 需放在所有 Hooks 之後，避免破壞 Hook 呼叫次序
   if (!open) return null
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="termsgate-title"
-      aria-describedby="termsgate-desc"
-      className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-2xl rounded-xl bg-white shadow-xl ring-1 ring-black/5"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="px-6 pt-5 pb-4">
-          <h2 id="termsgate-title" className="text-lg font-semibold">
-            開始前，請先同意借用規範
-          </h2>
-          <ol id="termsgate-desc" className="list-decimal pl-6 mt-3 space-y-1 text-sm text-gray-700">
-            <li>週日不可預約。</li>
-            <li>每次固定 3 小時，超時不受理。</li>
-            <li>週一／週三最晚離場 18:00，其餘日最晚 21:30。</li>
-            <li>請維護場地整潔並準時歸還。</li>
-            <li>違反規範將影響後續借用資格。</li>
-          </ol>
-          <div className="mt-3 text-sm">
-            <a
-              className="text-blue-600 hover:underline"
-              href="/terms"
-              target="_blank"
-              rel="noreferrer"
-            >
-              查看完整借用規範（新分頁）
-            </a>
-          </div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="w-[680px] max-w-[90vw] rounded-xl bg-white p-6 shadow-xl">
+        <h2 className="mb-3 text-lg font-semibold">借用規範</h2>
+        <div className="prose max-h-[45vh] overflow-auto">
+          <p>請詳閱並同意本借用規範後再送出申請。</p>
+          <ul>
+            <li>每日最早 07:00；週一/三最晚 18:00；其他日至 21:30；週日禁用。</li>
+            <li>單日最多 3 小時；重複日期自動裁切/略過不合規之日。</li>
+          </ul>
         </div>
-
-        <div className="px-6 pb-5 flex justify-end gap-3">
-          <button
-            type="button"
-            className="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-900 hover:bg-gray-50 disabled:opacity-60"
-            onClick={onClose}
-            disabled={submitting}
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            ref={agreeBtnRef}
-            className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
-            onClick={agree}
-            disabled={submitting}
-          >
+        <div className="mt-6 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-lg border px-4 py-2">取消</button>
+          <button type="button" ref={agreeBtnRef}
+            className="rounded-lg bg-blue-600 px-4 py-2 text-white disabled:opacity-60"
+            onClick={agree} disabled={submitting}>
             {submitting ? '處理中…' : '我已閱讀並同意'}
           </button>
         </div>

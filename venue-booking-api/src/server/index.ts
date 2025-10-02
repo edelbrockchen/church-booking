@@ -164,7 +164,6 @@ if (pool) {
 
 app.use('/api/bookings', bookingsRouter)
 app.use('/api/admin', adminRouter)
-
 app.get('/api/debug/terms', async (req, res) => {
   const pool = makePool()
   const user = (req as any).session?.user

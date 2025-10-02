@@ -25,14 +25,14 @@ async function main() {
         created_by  VARCHAR(100),
         reviewed_at TIMESTAMPTZ,
         reviewed_by VARCHAR(100),
-        status      VARCHAR(20) NOT NULL DEFAULT 'pending',  -- pending/approved/rejected/cancelled
+        status      VARCHAR(20) NOT NULL DEFAULT 'pending',
         category    VARCHAR(50)  NOT NULL DEFAULT '其他',
         note        TEXT,
         venue       VARCHAR(50)  NOT NULL
       );
     `)
 
-    // 3) terms_acceptances table（同意條款紀錄）
+    // 3) terms_acceptances table
     await c.query(`
       CREATE TABLE IF NOT EXISTS terms_acceptances (
         user_id     VARCHAR(100) PRIMARY KEY,
@@ -40,7 +40,7 @@ async function main() {
       );
     `)
 
-    // 4) helpful indexes（不會因舊資料失敗）
+    // 4) helpful indexes
     await c.query(`
       CREATE INDEX IF NOT EXISTS idx_bookings_range
         ON bookings USING gist (tstzrange(start_ts, end_ts, '[)'));
@@ -54,8 +54,7 @@ async function main() {
         ON bookings (created_at DESC);
     `)
 
-    // 5) 嘗試建立「不重疊」排他性約束（只對已核准 + 指定場地）
-    //    若資料已有重疊，優雅跳過（NOTICE），不讓整個 migrate 失敗
+    // 5) try to add overlap exclusion constraint (approved + 特定場地)
     await c.query(`
       DO $$
       BEGIN
@@ -69,9 +68,8 @@ async function main() {
               )
               WHERE (status = 'approved' AND venue IN ('大會堂','康樂廳'))
               DEFERRABLE INITIALLY IMMEDIATE;
-          EXCEPTION
-            WHEN others THEN
-              RAISE NOTICE 'skip creating no_overlap due to existing rows: %', SQLERRM;
+          EXCEPTION WHEN others THEN
+            RAISE NOTICE 'skip creating no_overlap due to existing rows: %', SQLERRM;
           END;
         END IF;
       END$$;
@@ -81,7 +79,7 @@ async function main() {
     console.log('[migrate] done')
   } catch (e) {
     await c.query('ROLLBACK')
-    console.error('[migrate] failed', e)
+    console.error('[migrate] failed', e as any)
     process.exitCode = 1
   } finally {
     c.release()

@@ -8,7 +8,8 @@
     "start": "node dist/server/index.js",
     "dev": "tsx watch src/server/index.ts",
     "typecheck": "tsc -p tsconfig.server.json --noEmit",
-    "migrate": "node dist/server/migrate.js"
+    "migrate": "node dist/server/migrate.js",
+    "start:with-migrate": "npm run build && npm run migrate && npm run start"
   },
   "engines": {
     "node": ">=20 <23"

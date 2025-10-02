@@ -6,7 +6,6 @@ export async function recordAgreementOnServer() {
     await apiFetch('/api/terms/accept', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      // apiFetch 已內建 credentials: 'include'
     })
   } catch {}
 }
