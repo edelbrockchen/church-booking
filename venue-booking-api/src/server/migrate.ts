@@ -12,10 +12,27 @@ async function main() {
   try {
     await c.query('BEGIN')
 
-    // 1) extension
-    await c.query('CREATE EXTENSION IF NOT EXISTS btree_gist;')
+    // 1) extensions
+    await c.query(`CREATE EXTENSION IF NOT EXISTS btree_gist;`)
 
-    // 3) terms_acceptances（記錄同意條款）
+    // 2) bookings table
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS bookings (
+        id          UUID PRIMARY KEY,
+        start_ts    TIMESTAMPTZ NOT NULL,
+        end_ts      TIMESTAMPTZ NOT NULL,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+        created_by  VARCHAR(100),
+        reviewed_at TIMESTAMPTZ,
+        reviewed_by VARCHAR(100),
+        status      VARCHAR(20) NOT NULL DEFAULT 'pending',  -- pending/approved/rejected/cancelled
+        category    VARCHAR(50)  NOT NULL DEFAULT '其他',
+        note        TEXT,
+        venue       VARCHAR(50)  NOT NULL
+      );
+    `)
+
+    // 3) terms_acceptances table（同意條款紀錄）
     await c.query(`
       CREATE TABLE IF NOT EXISTS terms_acceptances (
         user_id     VARCHAR(100) PRIMARY KEY,
@@ -23,79 +40,50 @@ async function main() {
       );
     `)
 
+    // 4) 索引（給重疊查詢加速；不會因為舊資料而失敗）
+    await c.query(`
+      CREATE INDEX IF NOT EXISTS idx_bookings_range
+        ON bookings USING gist (tstzrange(start_ts, end_ts, '[)'));
+    `)
+    await c.query(`
+      CREATE INDEX IF NOT EXISTS idx_bookings_venue_range
+        ON bookings USING gist (venue, tstzrange(start_ts, end_ts, '[)'));
+    `)
+    await c.query(`
+      CREATE INDEX IF NOT EXISTS idx_bookings_created_at
+        ON bookings (created_at DESC);
+    `)
 
-    // 2) bookings 表（含完整欄位）
-    await c.query(
-      [
-        'CREATE TABLE IF NOT EXISTS bookings (',
-        '  id UUID PRIMARY KEY,',
-        '  start_ts TIMESTAMPTZ NOT NULL,',
-        '  end_ts   TIMESTAMPTZ NOT NULL,',
-        '  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),',
-        '  created_by TEXT,',
-        "  status TEXT NOT NULL DEFAULT 'pending',",
-        '  reviewed_at TIMESTAMPTZ,',
-        '  reviewed_by TEXT,',
-        '  rejection_reason TEXT,',
-        '  category TEXT,',
-        '  note TEXT',
-        ');'
-      ].join('\n')
-    )
-
-    // 3) bookings 欄位補強（可重複執行）
-    await c.query("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';")
-    await c.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;')
-    await c.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS reviewed_by TEXT;')
-    await c.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS rejection_reason TEXT;')
-    await c.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS created_by TEXT;')
-    await c.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS category TEXT;')
-    await c.query('ALTER TABLE bookings ADD COLUMN IF NOT EXISTS note TEXT;')
-
-    // 4) bookings 不允許時間重疊
-    await c.query(
-      [
-        'DO $$',
-        'BEGIN',
-        "  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'no_overlap') THEN",
-        '    ALTER TABLE bookings',
-        "    ADD CONSTRAINT no_overlap EXCLUDE USING gist (",
-        "      tstzrange(start_ts, end_ts, '[)') WITH &&",
-        '    );',
-        '  END IF;',
-        'END',
-        '$$;'
-      ].join('\n')
-    )
-
-    // 5) terms_accept 表（記錄誰同意規範）
-    await c.query(
-      [
-        'CREATE TABLE IF NOT EXISTS terms_accept (',
-        '  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),',
-        '  user_id TEXT NOT NULL,',
-        '  accepted_at TIMESTAMPTZ NOT NULL DEFAULT now()',
-        ');'
-      ].join('\n')
-    )
-
-    // 6) session 表（給 connect-pg-simple 使用）
-    await c.query(
-      [
-        'CREATE TABLE IF NOT EXISTS "session" (',
-        '  sid varchar NOT NULL COLLATE "default",',
-        '  sess json NOT NULL,',
-        '  expire timestamp(6) NOT NULL',
-        ');',
-        'ALTER TABLE "session" ADD CONSTRAINT "session_pkey" PRIMARY KEY ("sid");'
-      ].join('\n')
-    )
+    // 5) 嘗試建立「不重疊」的排他性約束（依規則只管已核准、且僅大會堂/康樂廳）
+    //    若資料已有衝突，優雅跳過（Raise NOTICE 而不是 throw）
+    await c.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'no_overlap'
+        ) THEN
+          BEGIN
+            ALTER TABLE bookings
+              ADD CONSTRAINT no_overlap
+              EXCLUDE USING gist (
+                venue WITH =,
+                tstzrange(start_ts, end_ts, '[)') WITH &&
+              )
+              WHERE (status = 'approved' AND venue IN ('大會堂','康樂廳'))
+              DEFERRABLE INITIALLY IMMEDIATE;
+          EXCEPTION
+            WHEN others THEN
+              RAISE NOTICE 'skip creating no_overlap due to existing rows: %', SQLERRM;
+          END;
+        END IF;
+      END$$;
+    `)
 
     await c.query('COMMIT')
     console.log('[migrate] done')
   } catch (e) {
     await c.query('ROLLBACK')
-    console.error('[migrate] failed', e)
+    console.error('[migrate] failed', e as any)
     process.exitCode = 1
   } finally {
     c.release()
