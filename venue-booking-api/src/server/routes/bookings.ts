@@ -238,3 +238,49 @@ bookingsRouter.post('/:id/cancel', async (req, res) => {
     c.release()
   }
 })
+
+/* --------------------------- 兼容路由：/api/bookings/approved、/api/bookings --------------------------- */
+/** 當 index.ts 用 app.use('/api', bookingsRouter) 來掛時，
+ *  外部路徑會是 /api/bookings/approved、/api/bookings
+ *  所以這裡補上 /bookings/... 兩條路由，與上面 /approved、/ 的行為一致
+ */
+
+// GET /api/bookings/approved → 等同上面的 GET /approved
+bookingsRouter.get('/bookings/approved', async (_req, res) => {
+  if (!pool) return res.json({ items: [] })
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT id, start_ts, end_ts, created_by, category, note, venue
+      FROM bookings
+      WHERE status = 'approved'
+      ORDER BY start_ts ASC
+      `
+    )
+    res.json({ items: rows })
+  } catch (e) {
+    console.error('[bookings] /bookings/approved failed', e)
+    res.status(500).json({ error: 'server_error' })
+  }
+})
+
+// GET /api/bookings → 等同上面的 GET /
+bookingsRouter.get('/bookings', async (req, res) => {
+  if (!pool) return res.json({ items: [] })
+  try {
+    const status = (req.query.status as string | undefined)?.trim()
+    const base = `
+      SELECT id, start_ts, end_ts, created_at, created_by, status,
+             reviewed_at, reviewed_by, rejection_reason, category, note, venue
+      FROM bookings
+    `
+    const sql = status ? `${base} WHERE status = $1 ORDER BY start_ts ASC`
+                       : `${base} ORDER BY start_ts ASC`
+    const params = status ? [status] : []
+    const { rows } = await pool.query(sql, params)
+    res.json({ items: rows })
+  } catch (e) {
+    console.error('[bookings] /bookings failed', e)
+    res.status(500).json({ error: 'server_error' })
+  }
+})

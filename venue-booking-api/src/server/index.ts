@@ -1,4 +1,5 @@
 // src/server/index.ts
+import bookingsRouter from './routes/bookings'
 import express from 'express'
 import cors from 'cors'
 import session from 'express-session'
@@ -40,6 +41,7 @@ app.get('/api/healthz', (_req, res) => res.json({ ok: true }))
 
 // 你的既有路由（有就保留）
 app.use('/api/admin', adminRouter)
+app.use('/api', bookingsRouter)   // 這樣 /api/bookings/approved 就會存在
 
 // 啟動（Render 會把埠號放在 process.env.PORT）
 const PORT = Number(process.env.PORT) || 3000
