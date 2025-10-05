@@ -1,49 +1,48 @@
 // src/server/index.ts
-import bookingsRouter from './routes/bookings'
 import express from 'express'
 import cors from 'cors'
 import session from 'express-session'
 import cookieParser from 'cookie-parser'
-import bodyParser from 'body-parser'
+import bookingsRouter from './routes/bookings'           // 你原本的 bookings 檔
+import termsRouter from './routes/terms.route'           // 👈 這裡用 terms.route
+import adminRouterDefault, { adminRouter as adminNamed } from './routes/admin'
 
-// 如果你的專案有 admin 路由，就保留這兩行；沒有的話可以刪掉
-import { adminRouter } from './routes/admin'
+// 相容 default / named export
+const adminRouter = (adminNamed || adminRouterDefault) as any
 
 const app = express()
 
-// ✅ 代理環境（Render）必備，否則 secure cookie 可能被丟掉
+// Render / 反向代理：secure cookie 需要
 app.set('trust proxy', 1)
 
-// ✅ CORS：允許你的前端網域，並開啟憑證（Cookie）
+// CORS（跨站 Cookie 必要）
 app.use(cors({
-  origin: process.env.CORS_ORIGIN, // 例： https://venue-booking-frontend-a3ib.onrender.com
+  origin: process.env.CORS_ORIGIN, // 例：https://你的前端.onrender.com
   credentials: true,
+  methods: ['GET','POST','PUT','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','X-Requested-With'],
 }))
 
 app.use(cookieParser())
-app.use(bodyParser.json())
+app.use(express.json())
 
-// ✅ Session：跨網域一定要 SameSite=None + Secure
+// Session：SameSite=None + Secure
 app.use(session({
   secret: process.env.SESSION_SECRET || 'dev',
   resave: false,
   saveUninitialized: false,
-  cookie: {
-    httpOnly: true,
-    sameSite: 'none',
-    secure: true,
-  },
+  cookie: { httpOnly: true, sameSite: 'none', secure: true },
 }))
 
-// ✅ 健康檢查：同時提供 /api/health 與 /api/healthz（避免設定不一致）
+// 健康檢查
 app.get('/api/health', (_req, res) => res.status(200).send('ok'))
 app.get('/api/healthz', (_req, res) => res.json({ ok: true }))
 
-// 你的既有路由（有就保留）
+// 路由掛載
 app.use('/api/admin', adminRouter)
-app.use('/api', bookingsRouter)   // 這樣 /api/bookings/approved 就會存在
+app.use('/api', bookingsRouter)      // 提供 /api/bookings、/api/bookings/approved…
+app.use('/api/terms', termsRouter)   // 提供 /api/terms/status、/api/terms/accept
 
-// 啟動（Render 會把埠號放在 process.env.PORT）
 const PORT = Number(process.env.PORT) || 3000
 app.listen(PORT, () => {
   console.log(`[server] listening on :${PORT}`)
