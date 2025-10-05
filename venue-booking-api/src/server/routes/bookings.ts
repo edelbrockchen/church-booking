@@ -1,4 +1,3 @@
-// venue-booking-api/src/server/routes/bookings.ts
 import { Router, type Request } from 'express'
 import { z } from 'zod'
 import { makePool } from '../db'
@@ -46,9 +45,18 @@ function getUserId(req: Request): string | null {
 function isAdmin(req: Request): boolean {
   return (req as any).session?.user?.role === 'admin'
 }
+// 與 terms.route.ts 一致：允許訪客用 guest:<IP> 身分（可用 ALLOW_GUEST_TERMS 關閉）
+function effectiveUserId(req: Request): string | null {
+  const uid = getUserId(req)
+  if (uid) return uid
+  const allowGuest = (process.env.ALLOW_GUEST_TERMS ?? 'true').toLowerCase() === 'true'
+  if (!allowGuest) return null
+  const ip = (req.headers['x-forwarded-for'] as string) || (req.ip as string) || 'unknown'
+  return `guest:${ip}`
+}
 
 /* --------------------------- 建立申請（pending 可重疊） --------------------------- */
-bookingsRouter.post('/', async (req, res) => {
+const createHandler = async (req: Request, res: any) => {
   const p = createSchema.safeParse(req.body)
   if (!p.success) return res.status(400).json({ error: 'invalid_payload', details: p.error.issues })
 
@@ -88,13 +96,13 @@ bookingsRouter.post('/', async (req, res) => {
     })
   }
 
+  const uid = effectiveUserId(req)
+  if (!uid) return res.status(401).json({ error: 'unauthorized' })
+
   const c = await pool.connect()
   try {
-    const userId = getUserId(req)
-    if (!userId) return res.status(401).json({ error: 'unauthorized' })
-
-    // 需先同意條款（若允許訪客，會在 terms 路由建立 guest:<IP>）
-    const has = await c.query('SELECT 1 FROM terms_acceptances WHERE user_id=$1 LIMIT 1', [userId])
+    // 需先同意條款（terms.route.ts 也會寫入 guest:<IP>）
+    const has = await c.query('SELECT 1 FROM terms_acceptances WHERE user_id=$1 LIMIT 1', [uid])
     if (has.rowCount === 0) {
       const ALLOW_GUEST_TERMS = (process.env.ALLOW_GUEST_TERMS ?? 'true').toLowerCase() === 'true'
       if (ALLOW_GUEST_TERMS) {
@@ -102,7 +110,7 @@ bookingsRouter.post('/', async (req, res) => {
           INSERT INTO terms_acceptances (user_id, accepted_at)
           VALUES ($1, now())
           ON CONFLICT (user_id) DO UPDATE SET accepted_at = EXCLUDED.accepted_at
-        `, [userId])
+        `, [uid])
       } else {
         return res.status(403).json({ error: 'must_accept_terms' })
       }
@@ -141,7 +149,7 @@ bookingsRouter.post('/', async (req, res) => {
       INSERT INTO bookings (id, start_ts, end_ts, created_by, status, category, note, venue)
       VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7)
       `,
-      [id, startEff.toISOString(), endEff.toISOString(), created_by ?? userId ?? null, category ?? null, note ?? null, venue]
+      [id, startEff.toISOString(), endEff.toISOString(), created_by ?? uid ?? null, category ?? null, note ?? null, venue]
     )
 
     await c.query('COMMIT')
@@ -155,7 +163,7 @@ bookingsRouter.post('/', async (req, res) => {
       venue,
       category: category ?? 'default',
       note: note ?? '',
-      created_by: created_by ?? userId ?? '',
+      created_by: created_by ?? uid ?? '',
     })
   } catch (e: any) {
     await c.query('ROLLBACK')
@@ -165,7 +173,11 @@ bookingsRouter.post('/', async (req, res) => {
   } finally {
     c.release()
   }
-})
+}
+
+// 支援兩條路由：/api/ 及 /api/bookings
+bookingsRouter.post('/', createHandler as any)
+bookingsRouter.post('/bookings', createHandler as any)
 
 /* --------------------------- 列表：全部 --------------------------- */
 bookingsRouter.get('/', async (_req, res) => {
@@ -199,8 +211,8 @@ bookingsRouter.get('/approved', async (_req, res) => {
 bookingsRouter.post('/:id/cancel', async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'db_unavailable' })
 
-  const userId = getUserId(req)
-  if (!userId) return res.status(401).json({ error: 'unauthorized' })
+  const uid = effectiveUserId(req)
+  if (!uid) return res.status(401).json({ error: 'unauthorized' })
 
   const id = req.params.id
   const c = await pool.connect()
@@ -217,14 +229,14 @@ bookingsRouter.post('/:id/cancel', async (req, res) => {
       return res.status(409).json({ error: 'invalid_status' })
     }
     const admin = isAdmin(req)
-    const owner = (b.created_by ?? '') === userId
+    const owner = (b.created_by ?? '') === uid
     if (!(admin || owner)) {
       await c.query('ROLLBACK')
       return res.status(403).json({ error: 'forbidden' })
     }
     await c.query(
       `UPDATE bookings SET status='cancelled', reviewed_at=now(), reviewed_by=$2 WHERE id=$1`,
-      [id, admin ? userId : b.created_by]
+      [id, admin ? uid : b.created_by]
     )
     await c.query('COMMIT')
     return res.json({ ok: true })
@@ -237,10 +249,8 @@ bookingsRouter.post('/:id/cancel', async (req, res) => {
   }
 })
 
-/* --------------------------- 兼容路由：/api/bookings/approved、/api/bookings --------------------------- */
-// 若 index.ts 用 app.use('/api', bookingsRouter) 來掛，外部路徑會是 /api/bookings/approved、/api/bookings
-// 這裡補上 /bookings/... 兩條路由，與上面 /approved、/ 的行為一致（回傳 { items: [] } 形狀）
-
+/* --------------------------- 兼容路由（GET 列表） --------------------------- */
+// 若 index.ts 用 app.use('/api', bookingsRouter) 掛在 /api，外部會呼叫 /api/bookings 與 /api/bookings/approved
 bookingsRouter.get('/bookings/approved', async (_req, res) => {
   if (!pool) return res.json({ items: [] })
   try {
