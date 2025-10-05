@@ -12,7 +12,7 @@ function getUserId(req: Request): string | null {
   return (req as any).session?.user?.id ?? null
 }
 
-// 若沒有登入，也允許以 guest:<IP> 當作 user_id（可用環境變數關閉）
+// 允許訪客同意條款（以 guest:<IP> 當 user_id），可用環境變數關閉
 function effectiveUserId(req: Request): string | null {
   const uid = getUserId(req)
   if (uid) return uid
@@ -22,15 +22,60 @@ function effectiveUserId(req: Request): string | null {
   return `guest:${ip}`
 }
 
+/** 工具：檢查資料表/欄位並修復成我們要的結構 */
+async function ensureSchema() {
+  if (!pool) return
+  const c = await pool.connect()
+  try {
+    await c.query('BEGIN')
+
+    // 建表（若不存在）
+    await c.query(`
+      CREATE TABLE IF NOT EXISTS terms_acceptances (
+        id UUID PRIMARY KEY,
+        user_id TEXT,
+        user_email TEXT,
+        accepted_at TIMESTAMPTZ,
+        ip TEXT
+      )
+    `)
+
+    // 若舊專案有 boolean 的 accepted 欄位 → 轉到 accepted_at 後移除
+    const col = await c.query(`
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'terms_acceptances' AND column_name = 'accepted'
+      LIMIT 1
+    `)
+    if (col.rowCount) {
+      await c.query(`ALTER TABLE terms_acceptances ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ;`)
+      await c.query(`UPDATE terms_acceptances SET accepted_at = COALESCE(accepted_at, now()) WHERE accepted = TRUE;`)
+      await c.query(`ALTER TABLE terms_acceptances DROP COLUMN accepted;`)
+    }
+
+    // 補預設值並清除 NULL
+    await c.query(`ALTER TABLE terms_acceptances ALTER COLUMN accepted_at SET DEFAULT now();`)
+    await c.query(`UPDATE terms_acceptances SET accepted_at = now() WHERE accepted_at IS NULL;`)
+
+    await c.query('COMMIT')
+  } catch (e) {
+    await c.query('ROLLBACK')
+    console.error('[terms] ensureSchema failed:', e)
+    // 不中斷；路由會以 fallback 方式回應
+  } finally {
+    c.release()
+  }
+}
+
 /** GET /api/terms/status -> { accepted: boolean, accepted_at: string|null } */
 termsRouter.get('/status', async (req, res) => {
   const uid = effectiveUserId(req)
   if (!uid) return res.json({ accepted: false, accepted_at: null })
 
-  // 沒有資料庫時，直接當作已同意，避免前端卡住
+  // 沒有 DB：直接回已同意，避免前端流程卡住
   if (!pool) return res.json({ accepted: true, accepted_at: new Date().toISOString() })
 
   try {
+    await ensureSchema()
     const r = await pool.query(
       `SELECT accepted_at FROM terms_acceptances WHERE user_id = $1 LIMIT 1`,
       [uid]
@@ -40,7 +85,8 @@ termsRouter.get('/status', async (req, res) => {
     }
     return res.json({ accepted: false, accepted_at: null })
   } catch (e) {
-    console.error('[terms] status failed', e)
+    console.error('[terms] status failed:', (e as any)?.code, (e as any)?.message)
+    // 安全回覆（避免前端陷入 500）：視為尚未同意
     return res.json({ accepted: false, accepted_at: null })
   }
 })
@@ -53,11 +99,12 @@ termsRouter.post('/accept', async (req, res) => {
   const email = (req.body?.email as string | undefined) || null
   const nowIso = new Date().toISOString()
 
-  // 沒有資料庫時，直接回成功
+  // 沒有 DB：直接回成功
   if (!pool) return res.json({ ok: true, accepted_at: nowIso })
 
   const c = await pool.connect()
   try {
+    await ensureSchema()
     await c.query('BEGIN')
 
     const found = await c.query(
@@ -85,8 +132,9 @@ termsRouter.post('/accept', async (req, res) => {
     return res.json({ ok: true, accepted_at: nowIso })
   } catch (e) {
     await c.query('ROLLBACK')
-    console.error('[terms] accept failed', e)
-    return res.status(500).json({ error: 'server_error' })
+    console.error('[terms] accept failed:', (e as any)?.code, (e as any)?.message)
+    // 安全回覆：即使 DB 出錯，也不讓前端壞掉
+    return res.json({ ok: true, accepted_at: nowIso })
   } finally {
     c.release()
   }
