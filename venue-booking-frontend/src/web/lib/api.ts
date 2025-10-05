@@ -1,20 +1,18 @@
 // venue-booking-frontend/src/web/lib/api.ts
-// ✅ 單檔版：不需要 src/web/admin 目錄
+// 相容舊寫法：提供 apiGet/apiPost/apiPut/apiDelete
+// 並強制所有請求帶上 credentials: 'include'
 
-// 後端 API Base：優先採用 VITE_API_BASE_URL（或 VITE_API_BASE），並移除結尾斜線
 const API_BASE = (
   import.meta.env.VITE_API_BASE_URL ||
   import.meta.env.VITE_API_BASE ||
   ''
 ).replace(/\/+$/, '')
 
-// 產生完整 API URL
 export function apiUrl(path: string) {
   const clean = path?.startsWith('/') ? path : `/${path || ''}`
   return `${API_BASE}${clean}`
 }
 
-// 共用 fetch：一定帶 cookie（跨網域需要）
 export async function apiFetch(input: string, init: RequestInit = {}) {
   const url = input.startsWith('http') ? input : apiUrl(input)
 
@@ -24,13 +22,12 @@ export async function apiFetch(input: string, init: RequestInit = {}) {
       'Content-Type': 'application/json',
       ...(init.headers || {}),
     },
-    // 🔑 關鍵：跨網域時帶上/接收 session cookie
+    // 重要：跨網域帶 cookie
     credentials: 'include',
   })
   return r
 }
 
-// 取 JSON，失敗時拋出帶狀態碼的錯誤
 export async function apiJson<T = any>(input: string, init: RequestInit = {}) {
   const r = await apiFetch(input, init)
   if (!r.ok) {
@@ -41,13 +38,27 @@ export async function apiJson<T = any>(input: string, init: RequestInit = {}) {
     } catch {}
     throw new Error(`HTTP ${r.status}${msg ? `: ${msg}` : ''}`)
   }
-  return (r.headers.get('content-type')?.includes('application/json')
-    ? r.json()
-    : (null as any)) as Promise<T>
+  const ct = r.headers.get('content-type') || ''
+  if (ct.includes('application/json')) return (await r.json()) as T
+  return null as unknown as T
 }
 
-// --- Admin API 也內建在此檔，避免要建資料夾 ---
+// —— 這四個是為了相容你舊的 import ——
+// GET / POST / PUT / DELETE 都會自動帶 cookie
+export function apiGet<T = any>(path: string) {
+  return apiJson<T>(path, { method: 'GET' })
+}
+export function apiPost<T = any, B = any>(path: string, body?: B) {
+  return apiJson<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) })
+}
+export function apiPut<T = any, B = any>(path: string, body?: B) {
+  return apiJson<T>(path, { method: 'PUT', body: body === undefined ? undefined : JSON.stringify(body) })
+}
+export function apiDelete<T = any>(path: string) {
+  return apiJson<T>(path, { method: 'DELETE' })
+}
 
+// —— Admin API 直接放這支檔案（不必建資料夾）——
 export type AdminLoginResp = { ok: true; user: string }
 export type AdminMeResp = { user: string | null }
 export type AdminReviewListResp = { items: any[] }
@@ -59,16 +70,12 @@ export const adminApi = {
       body: JSON.stringify({ username, password }),
     })
   },
-
   async me() {
     return apiJson<AdminMeResp>('/api/admin/me', { method: 'GET' })
   },
-
   async reviewList() {
-    // /api/admin/review 需由後端用 requireAdmin 保護
     return apiJson<AdminReviewListResp>('/api/admin/review', { method: 'GET' })
   },
-
   async logout() {
     return apiJson<{ ok: true }>('/api/admin/logout', { method: 'POST' })
   },
