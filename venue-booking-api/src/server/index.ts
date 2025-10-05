@@ -6,15 +6,12 @@ import cookieParser from 'cookie-parser'
 
 // 路由
 import bookingsRouter from './routes/bookings'
-import termsRouter from './routes/terms.route' // 👈 用你的檔名 terms.route.ts
-import adminRouterDefault, { adminRouter as adminRouterNamed } from './routes/admin'
-
-// 相容 default / named export（擇一存在）
-const adminRouter = (adminRouterNamed || adminRouterDefault) as any
+import termsRouter from './routes/terms.route' // 你的檔名是 terms.route.ts
+import { adminRouter } from './routes/admin'   // 👈 改成命名匯入
 
 const app = express()
 
-// 反向代理（Render）環境：必備，否則 secure cookie 可能被丟棄
+// 反向代理（Render）：讓 secure cookie 正常
 app.set('trust proxy', 1)
 
 // CORS：允許前端網域，並啟用 credentials（跨站 Cookie 必要）
@@ -36,14 +33,14 @@ app.use(session({
   cookie: { httpOnly: true, sameSite: 'none', secure: true },
 }))
 
-// 健康檢查（Render 的 Health Check Path 設 /api/health 或 /api/healthz）
+// 健康檢查（Render Health Check Path 可設 /api/health 或 /api/healthz）
 app.get('/api/health', (_req, res) => res.status(200).send('ok'))
 app.get('/api/healthz', (_req, res) => res.json({ ok: true }))
 
 // 掛載路由
 app.use('/api/admin', adminRouter)
-app.use('/api', bookingsRouter)       // 提供 /api/bookings、/api/bookings/approved…
-app.use('/api/terms', termsRouter)    // 提供 /api/terms/status、/api/terms/accept
+app.use('/api', bookingsRouter)       // /api/bookings、/api/bookings/approved…
+app.use('/api/terms', termsRouter)    // /api/terms/status、/api/terms/accept
 
 // 啟動
 const PORT = Number(process.env.PORT) || 3000
