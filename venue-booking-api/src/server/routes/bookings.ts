@@ -93,7 +93,7 @@ bookingsRouter.post('/', async (req, res) => {
     const userId = getUserId(req)
     if (!userId) return res.status(401).json({ error: 'unauthorized' })
 
-    // 需先同意條款
+    // 需先同意條款（若允許訪客，會在 terms 路由建立 guest:<IP>）
     const has = await c.query('SELECT 1 FROM terms_acceptances WHERE user_id=$1 LIMIT 1', [userId])
     if (has.rowCount === 0) {
       const ALLOW_GUEST_TERMS = (process.env.ALLOW_GUEST_TERMS ?? 'true').toLowerCase() === 'true'
@@ -127,7 +127,6 @@ bookingsRouter.post('/', async (req, res) => {
       if (ov.rows.length > 0) {
         await c.query('ROLLBACK')
         const expose = (process.env.EXPOSE_CONFLICTS ?? 'false').toLowerCase() === 'true'
-        // 顯示「該場地已被申請」
         return res.status(409).json(
           expose
             ? { error: 'overlap', message: '該場地已被申請', conflict: ov.rows[0] }
@@ -160,7 +159,6 @@ bookingsRouter.post('/', async (req, res) => {
     })
   } catch (e: any) {
     await c.query('ROLLBACK')
-    // 若之後某處仍觸發了排他約束（例如核准流程），給一致的錯誤碼
     if (e?.code === '23P01') return res.status(409).json({ error: 'overlap', message: '該場地已被申請' })
     console.error('[bookings] insert failed', e)
     return res.status(500).json({ error: 'server_error' })
@@ -240,22 +238,17 @@ bookingsRouter.post('/:id/cancel', async (req, res) => {
 })
 
 /* --------------------------- 兼容路由：/api/bookings/approved、/api/bookings --------------------------- */
-/** 當 index.ts 用 app.use('/api', bookingsRouter) 來掛時，
- *  外部路徑會是 /api/bookings/approved、/api/bookings
- *  所以這裡補上 /bookings/... 兩條路由，與上面 /approved、/ 的行為一致
- */
+// 若 index.ts 用 app.use('/api', bookingsRouter) 來掛，外部路徑會是 /api/bookings/approved、/api/bookings
+// 這裡補上 /bookings/... 兩條路由，與上面 /approved、/ 的行為一致（回傳 { items: [] } 形狀）
 
-// GET /api/bookings/approved → 等同上面的 GET /approved
 bookingsRouter.get('/bookings/approved', async (_req, res) => {
   if (!pool) return res.json({ items: [] })
   try {
     const { rows } = await pool.query(
-      `
-      SELECT id, start_ts, end_ts, created_by, category, note, venue
-      FROM bookings
-      WHERE status = 'approved'
-      ORDER BY start_ts ASC
-      `
+      `SELECT id, start_ts, end_ts, created_by, category, note, venue
+       FROM bookings
+       WHERE status = 'approved'
+       ORDER BY start_ts ASC`
     )
     res.json({ items: rows })
   } catch (e) {
@@ -264,16 +257,11 @@ bookingsRouter.get('/bookings/approved', async (_req, res) => {
   }
 })
 
-// GET /api/bookings → 等同上面的 GET /
 bookingsRouter.get('/bookings', async (req, res) => {
   if (!pool) return res.json({ items: [] })
   try {
     const status = (req.query.status as string | undefined)?.trim()
-    const base = `
-      SELECT id, start_ts, end_ts, created_at, created_by, status,
-             reviewed_at, reviewed_by, rejection_reason, category, note, venue
-      FROM bookings
-    `
+    const base = `SELECT id, start_ts, end_ts, created_at, created_by, status, reviewed_at, reviewed_by, rejection_reason, category, note, venue FROM bookings`
     const sql = status ? `${base} WHERE status = $1 ORDER BY start_ts ASC`
                        : `${base} ORDER BY start_ts ASC`
     const params = status ? [status] : []
