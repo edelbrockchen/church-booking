@@ -62,21 +62,33 @@ async function ensureBookingsSchema() {
   const c = await pool.connect()
   try {
     await c.query('BEGIN')
+
+    // 欄位：沒有就加
     await c.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS client_key TEXT`)
+
+    // （舊的作法）你可能已經有「部分唯一索引」：bookings_client_key_uq
+    //   留著也沒關係；下面加一個真正的「唯一約束」讓 ON CONFLICT 能正確對應。
     await c.query(`
       DO $$
       BEGIN
         IF NOT EXISTS (
-          SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'bookings_client_key_uq'
+          SELECT 1
+          FROM pg_constraint
+          WHERE conname = 'bookings_client_key_uniq'
         ) THEN
-          CREATE UNIQUE INDEX bookings_client_key_uq ON bookings (client_key) WHERE client_key IS NOT NULL;
+          ALTER TABLE public.bookings
+            ADD CONSTRAINT bookings_client_key_uniq UNIQUE (client_key);
         END IF;
-      END$$;`)
+      END$$;
+    `)
+
     await c.query('COMMIT')
   } catch (e) {
     await c.query('ROLLBACK')
     console.error('[bookings] ensureBookingsSchema failed:', e)
-  } finally { c.release() }
+  } finally {
+    c.release()
+  }
 }
 
 // 動態偵測 terms_acceptances 欄位，做 insert / update（不要求特定欄位存在）
