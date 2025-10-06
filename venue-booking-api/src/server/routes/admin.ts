@@ -55,7 +55,7 @@ adminRouter.post('/login', async (req, res) => {
   const { username, password } = req.body || {}
   if (!username || !password) return res.status(400).json({ error: 'missing_credentials', message: '請輸入帳號與密碼' })
 
-  // 先清舊 session
+  // 清舊 session，避免之前已登入殘留
   const sess: any = (req as any).session || ((req as any).session = {})
   if (sess.user) delete sess.user
 
@@ -99,15 +99,23 @@ adminRouter.get('/review', async (req, res) => {
     params.push(`%${q}%`); p++
   }
 
-  // 以 client_key 去重；沒有 client_key 就退回用 id
+  // ⚠️ 改成把 id 轉成文字，產生 dedup_key 後用 DISTINCT ON 去重
   const listSQL = `
-    SELECT DISTINCT ON (COALESCE(client_key, id))
-           id, start_ts, end_ts, created_at, created_by, status,
-           reviewed_at, reviewed_by, rejection_reason, category, note, venue, client_key
-    FROM bookings
-    WHERE ${where}
-    ORDER BY COALESCE(client_key, id), created_at DESC
+    WITH items AS (
+      SELECT
+        id, start_ts, end_ts, created_at, created_by, status,
+        reviewed_at, reviewed_by, rejection_reason, category, note, venue, client_key,
+        COALESCE(client_key, id::text) AS dedup_key
+      FROM bookings
+      WHERE ${where}
+    )
+    SELECT DISTINCT ON (dedup_key)
+      id, start_ts, end_ts, created_at, created_by, status,
+      reviewed_at, reviewed_by, rejection_reason, category, note, venue, client_key
+    FROM items
+    ORDER BY dedup_key, created_at DESC
   `
+
   const statSQL = `
     SELECT status, COUNT(*)::int AS n
     FROM bookings
