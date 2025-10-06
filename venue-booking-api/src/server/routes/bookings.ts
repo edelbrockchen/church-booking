@@ -1,7 +1,8 @@
+// src/server/routes/bookings.ts
 import { Router, type Request } from 'express'
 import { z } from 'zod'
 import { makePool } from '../db'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 
 export const bookingsRouter = Router()
 export default bookingsRouter
@@ -11,16 +12,18 @@ const pool = makePool()
 /* --------------------------- 常數/型別 --------------------------- */
 const AllowedCategories = ['教會聚會', '社團活動', '研習', '其他'] as const
 const AllowedVenues     = ['大會堂', '康樂廳', '其它教室'] as const
-const BlockedVenuesOnApproved = new Set(['大會堂', '康樂廳']) // 這兩個場地核准後要互擋
+const BlockedVenuesOnApproved = new Set(['大會堂', '康樂廳'])
 
 const createSchema = z.object({
   start: z.string().datetime(),
-  venue: z.enum(AllowedVenues), // 場地必填
+  venue: z.enum(AllowedVenues),
   category: z.string().trim().optional()
     .transform(v => (v && v.length ? v : undefined))
     .refine(v => !v || AllowedCategories.includes(v as any), { message: 'invalid_category' }),
   note: z.string().trim().max(200).optional(),
   created_by: z.string().trim().max(100).optional(),
+  // 新增：前端可傳入，或用 header:X-Idempotency-Key；不傳我會自動生成
+  client_key: z.string().trim().max(80).optional(),
 })
 
 /* --------------------------- 工具: 台北時間規範 --------------------------- */
@@ -45,7 +48,6 @@ function getUserId(req: Request): string | null {
 function isAdmin(req: Request): boolean {
   return (req as any).session?.user?.role === 'admin'
 }
-// 與 terms.route.ts 一致：允許訪客用 guest:<IP> 身分（可用 ALLOW_GUEST_TERMS 關閉）
 function effectiveUserId(req: Request): string | null {
   const uid = getUserId(req)
   if (uid) return uid
@@ -53,6 +55,34 @@ function effectiveUserId(req: Request): string | null {
   if (!allowGuest) return null
   const ip = (req.headers['x-forwarded-for'] as string) || (req.ip as string) || 'unknown'
   return `guest:${ip}`
+}
+
+/* --------------------------- 確保資料表：client_key 唯一 --------------------------- */
+async function ensureBookingsSchema() {
+  if (!pool) return
+  const c = await pool.connect()
+  try {
+    await c.query('BEGIN')
+    // 欄位
+    await c.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS client_key TEXT`)
+    // 唯一索引（若已存在不會再建）
+    await c.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'bookings_client_key_uq'
+        ) THEN
+          CREATE UNIQUE INDEX bookings_client_key_uq ON bookings (client_key) WHERE client_key IS NOT NULL;
+        END IF;
+      END$$;
+    `)
+    await c.query('COMMIT')
+  } catch (e) {
+    await c.query('ROLLBACK')
+    console.error('[bookings] ensureBookingsSchema failed:', e)
+  } finally {
+    c.release()
+  }
 }
 
 /* --------------------------- 建立申請（pending 可重疊） --------------------------- */
@@ -96,12 +126,23 @@ const createHandler = async (req: Request, res: any) => {
     })
   }
 
+  await ensureBookingsSchema()
+
   const uid = effectiveUserId(req)
   if (!uid) return res.status(401).json({ error: 'unauthorized' })
 
+  // 取得／生成冪等鍵（同一使用者、同一時段＋場地，5分鐘內送單都視為同一張）
+  let clientKey =
+    (p.data.client_key && p.data.client_key.length ? p.data.client_key : undefined) ||
+    (req.headers['x-idempotency-key'] as string | undefined)
+  if (!clientKey) {
+    const seed = `${uid}|${venue}|${startEff.toISOString()}|${endEff.toISOString()}|${Math.floor(Date.now()/ (5*60*1000))}`
+    clientKey = createHash('sha256').update(seed).digest('hex').slice(0, 64)
+  }
+
   const c = await pool.connect()
   try {
-    // 需先同意條款（terms.route.ts 也會寫入 guest:<IP>）
+    // 需先同意條款
     const has = await c.query('SELECT 1 FROM terms_acceptances WHERE user_id=$1 LIMIT 1', [uid])
     if (has.rowCount === 0) {
       const ALLOW_GUEST_TERMS = (process.env.ALLOW_GUEST_TERMS ?? 'true').toLowerCase() === 'true'
@@ -118,7 +159,7 @@ const createHandler = async (req: Request, res: any) => {
 
     await c.query('BEGIN')
 
-    // ✅ 僅在「大會堂／康樂廳」時，才檢查已核准的重疊（半開區間 [)）
+    // ✅ 僅在「大會堂／康樂廳」時，才檢查已核准的重疊
     if (BlockedVenuesOnApproved.has(venue)) {
       const rangeMode = '[)'
       const ov = await c.query(
@@ -144,26 +185,40 @@ const createHandler = async (req: Request, res: any) => {
     }
 
     const id = randomUUID()
-    await c.query(
+    const ins = await c.query(
       `
-      INSERT INTO bookings (id, start_ts, end_ts, created_by, status, category, note, venue)
-      VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7)
+      INSERT INTO bookings (id, start_ts, end_ts, created_by, status, category, note, venue, client_key)
+      VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, $8)
+      ON CONFLICT (client_key) DO NOTHING
       `,
-      [id, startEff.toISOString(), endEff.toISOString(), created_by ?? uid ?? null, category ?? null, note ?? null, venue]
+      [id, startEff.toISOString(), endEff.toISOString(), created_by ?? uid ?? null, category ?? null, note ?? null, venue, clientKey]
     )
 
+    // 若因重複而沒有插入，撈出舊的回傳（冪等）
+    let row: any
+    if (ins.rowCount === 0) {
+      const r = await c.query(
+        `SELECT id, start_ts, end_ts, created_by, status, category, note, venue FROM bookings WHERE client_key=$1 LIMIT 1`,
+        [clientKey]
+      )
+      row = r.rows[0]
+    } else {
+      row = { id, start_ts: startEff.toISOString(), end_ts: endEff.toISOString(), created_by: created_by ?? uid ?? null, status: 'pending', category: category ?? null, note: note ?? null, venue }
+    }
+
     await c.query('COMMIT')
-    return res.status(201).json({
-      id,
-      start: startEff.toISOString(),
-      end:   endEff.toISOString(),
+    return res.status(ins.rowCount ? 201 : 200).json({
+      id: row.id,
+      start: new Date(row.start_ts).toISOString(),
+      end:   new Date(row.end_ts).toISOString(),
       truncated,
       persisted: true,
-      status: 'pending',
-      venue,
-      category: category ?? 'default',
-      note: note ?? '',
-      created_by: created_by ?? uid ?? '',
+      status: row.status,
+      venue: row.venue,
+      category: row.category ?? 'default',
+      note: row.note ?? '',
+      created_by: row.created_by ?? '',
+      client_key: clientKey,
     })
   } catch (e: any) {
     await c.query('ROLLBACK')
@@ -179,35 +234,29 @@ const createHandler = async (req: Request, res: any) => {
 bookingsRouter.post('/', createHandler as any)
 bookingsRouter.post('/bookings', createHandler as any)
 
-/* --------------------------- 列表：全部 --------------------------- */
+/* --------------------------- 列表（含相容路由） --------------------------- */
 bookingsRouter.get('/', async (_req, res) => {
   if (!pool) return res.json({ items: [] })
-  const { rows } = await pool.query(
-    `
+  const { rows } = await pool.query(`
     SELECT id, start_ts, end_ts, created_at, created_by, status,
            reviewed_at, reviewed_by, rejection_reason, category, note, venue
     FROM bookings
     ORDER BY start_ts ASC
-    `
-  )
+  `)
   res.json({ items: rows })
 })
 
-/* --------------------------- 列表：已核准（行事曆用） --------------------------- */
 bookingsRouter.get('/approved', async (_req, res) => {
   if (!pool) return res.json({ items: [] })
-  const { rows } = await pool.query(
-    `
+  const { rows } = await pool.query(`
     SELECT id, start_ts, end_ts, created_by, category, note, venue
     FROM bookings
     WHERE status = 'approved'
     ORDER BY start_ts ASC
-    `
-  )
+  `)
   res.json({ items: rows })
 })
 
-/* --------------------------- 取消 --------------------------- */
 bookingsRouter.post('/:id/cancel', async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'db_unavailable' })
 
@@ -249,36 +298,21 @@ bookingsRouter.post('/:id/cancel', async (req, res) => {
   }
 })
 
-/* --------------------------- 兼容路由（GET 列表） --------------------------- */
-// 若 index.ts 用 app.use('/api', bookingsRouter) 掛在 /api，外部會呼叫 /api/bookings 與 /api/bookings/approved
-bookingsRouter.get('/bookings/approved', async (_req, res) => {
-  if (!pool) return res.json({ items: [] })
-  try {
-    const { rows } = await pool.query(
-      `SELECT id, start_ts, end_ts, created_by, category, note, venue
-       FROM bookings
-       WHERE status = 'approved'
-       ORDER BY start_ts ASC`
-    )
-    res.json({ items: rows })
-  } catch (e) {
-    console.error('[bookings] /bookings/approved failed', e)
-    res.status(500).json({ error: 'server_error' })
-  }
-})
-
+// 相容清單路由（前端可能打 /api/bookings 與 /api/bookings/approved）
 bookingsRouter.get('/bookings', async (req, res) => {
   if (!pool) return res.json({ items: [] })
-  try {
-    const status = (req.query.status as string | undefined)?.trim()
-    const base = `SELECT id, start_ts, end_ts, created_at, created_by, status, reviewed_at, reviewed_by, rejection_reason, category, note, venue FROM bookings`
-    const sql = status ? `${base} WHERE status = $1 ORDER BY start_ts ASC`
-                       : `${base} ORDER BY start_ts ASC`
-    const params = status ? [status] : []
-    const { rows } = await pool.query(sql, params)
-    res.json({ items: rows })
-  } catch (e) {
-    console.error('[bookings] /bookings failed', e)
-    res.status(500).json({ error: 'server_error' })
-  }
+  const status = (req.query.status as string | undefined)?.trim()
+  const base = `SELECT id, start_ts, end_ts, created_at, created_by, status, reviewed_at, reviewed_by, rejection_reason, category, note, venue FROM bookings`
+  const sql = status ? `${base} WHERE status = $1 ORDER BY start_ts ASC` : `${base} ORDER BY start_ts ASC`
+  const params = status ? [status] : []
+  const { rows } = await pool.query(sql, params)
+  res.json({ items: rows })
+})
+bookingsRouter.get('/bookings/approved', async (_req, res) => {
+  if (!pool) return res.json({ items: [] })
+  const { rows } = await pool.query(
+    `SELECT id, start_ts, end_ts, created_by, category, note, venue
+     FROM bookings WHERE status='approved' ORDER BY start_ts ASC`
+  )
+  res.json({ items: rows })
 })
