@@ -99,21 +99,28 @@ adminRouter.get('/review', async (req, res) => {
     params.push(`%${q}%`); p++
   }
 
-  // ⚠️ 改成把 id 轉成文字，產生 dedup_key 後用 DISTINCT ON 去重
+  // 以 client_key + 時段 + 場地 + 申請人 + 狀態 去重，選同組中 created_at 最新的那筆
   const listSQL = `
     WITH items AS (
       SELECT
         id, start_ts, end_ts, created_at, created_by, status,
-        reviewed_at, reviewed_by, rejection_reason, category, note, venue, client_key,
-        COALESCE(client_key, id::text) AS dedup_key
+        reviewed_at, reviewed_by, rejection_reason, category, note, venue, client_key
       FROM bookings
       WHERE ${where}
     )
-    SELECT DISTINCT ON (dedup_key)
+    SELECT DISTINCT ON (
+      COALESCE(client_key, ''),
+      start_ts, end_ts, venue,
+      COALESCE(created_by, ''),
+      status
+    )
       id, start_ts, end_ts, created_at, created_by, status,
       reviewed_at, reviewed_by, rejection_reason, category, note, venue, client_key
     FROM items
-    ORDER BY dedup_key, created_at DESC
+    ORDER BY
+      COALESCE(client_key, ''),
+      start_ts, end_ts, venue, COALESCE(created_by, ''), status,
+      created_at DESC
   `
 
   const statSQL = `
