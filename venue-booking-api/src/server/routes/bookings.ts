@@ -40,19 +40,26 @@ function latestCapTPE(d: Date) {
 }
 function isSundayTPE(d: Date) { return new Date(`${tpeKey(d)}T12:00:00+08:00`).getUTCDay() === 0 }
 
-/* --------------------------- session helpers --------------------------- */
+/* --------------------------- session / 雜項 --------------------------- */
 function getUserId(req: Request): string | null {
   return (req as any).session?.user?.id ?? null
 }
 function isAdmin(req: Request): boolean {
   return (req as any).session?.user?.role === 'admin'
 }
+function firstIp(req: Request): string | null {
+  const raw = req.headers['x-forwarded-for']
+  const s = Array.isArray(raw) ? raw[0] : (raw ?? '').toString()
+  if (s) return s.split(',')[0].trim()
+  // 後備
+  return (req.socket?.remoteAddress ?? (req as any).ip ?? null) as string | null
+}
 function effectiveUserId(req: Request): string | null {
   const uid = getUserId(req)
   if (uid) return uid
   const allowGuest = (process.env.ALLOW_GUEST_TERMS ?? 'true').toLowerCase() === 'true'
   if (!allowGuest) return null
-  const ip = (req.headers['x-forwarded-for'] as string) || (req.ip as string) || 'unknown'
+  const ip = firstIp(req) || 'unknown'
   return `guest:${ip}`
 }
 
@@ -63,12 +70,14 @@ async function ensureBookingsSchema() {
   const c = await pool.connect()
   try {
     await c.query('BEGIN')
-    await c.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS client_key TEXT`)
+    await c.query(`ALTER TABLE public.bookings ADD COLUMN IF NOT EXISTS client_key TEXT`)
     await c.query(`
       DO $$
       BEGIN
         IF NOT EXISTS (
-          SELECT 1 FROM pg_constraint WHERE conname = 'bookings_client_key_uniq'
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'bookings_client_key_uniq'
+            AND conrelid = 'public.bookings'::regclass
         ) THEN
           ALTER TABLE public.bookings
             ADD CONSTRAINT bookings_client_key_uniq UNIQUE (client_key);
@@ -86,46 +95,41 @@ async function ensureBookingsSchema() {
 
 // 動態相容：不強制固定 terms_acceptances 欄位，能適配舊 schema
 async function upsertTermsAcceptance(c: any, userId: string, ip: string | null) {
+  // 盡量柔性建立所需欄位（不會覆蓋你已經有的結構）
   await c.query(`
-    CREATE TABLE IF NOT EXISTS terms_acceptances (
-      user_id TEXT PRIMARY KEY,
-      accepted_at TIMESTAMPTZ,
-      user_email TEXT,
-      ip TEXT
+    CREATE TABLE IF NOT EXISTS public.terms_acceptances (
+      user_id TEXT,
+      accepted_at TIMESTAMPTZ DEFAULT now()
     )
   `)
-  const cols = await c.query(`
-    SELECT column_name FROM information_schema.columns
-    WHERE table_name='terms_acceptances' AND table_schema='public'
+  await c.query(`ALTER TABLE public.terms_acceptances ADD COLUMN IF NOT EXISTS user_id TEXT`)
+  await c.query(`ALTER TABLE public.terms_acceptances ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ`)
+  await c.query(`ALTER TABLE public.terms_acceptances ADD COLUMN IF NOT EXISTS user_email TEXT`)
+  await c.query(`ALTER TABLE public.terms_acceptances ADD COLUMN IF NOT EXISTS ip TEXT`)
+  await c.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'terms_acceptances_user_id_key'
+          AND conrelid = 'public.terms_acceptances'::regclass
+      ) THEN
+        ALTER TABLE public.terms_acceptances
+          ADD CONSTRAINT terms_acceptances_user_id_key UNIQUE (user_id);
+      END IF;
+    END$$;
   `)
-  const set = new Set(cols.rows.map((r: any) => r.column_name as string))
-  const hasAcceptedAt = set.has('accepted_at')
-  const hasAccepted   = set.has('accepted') // 舊 boolean 欄位
-  const hasIp         = set.has('ip')
-  const hasEmail      = set.has('user_email')
 
-  const has = await c.query(`SELECT 1 FROM terms_acceptances WHERE user_id=$1 LIMIT 1`, [userId])
-  if (has.rowCount > 0) {
-    const parts: string[] = []
-    const params: any[] = []
-    let i = 1
-    if (hasAcceptedAt) parts.push(`accepted_at = now()`)
-    else if (hasAccepted) parts.push(`accepted = TRUE`)
-    if (hasIp) { parts.push(`ip = $${i++}`); params.push(ip) }
-    params.push(userId)
-    if (parts.length) await c.query(`UPDATE terms_acceptances SET ${parts.join(', ')} WHERE user_id = $${i}`, params)
+  const found = await c.query(`SELECT 1 FROM public.terms_acceptances WHERE user_id=$1 LIMIT 1`, [userId])
+  if (found.rowCount > 0) {
+    await c.query(`UPDATE public.terms_acceptances
+                   SET accepted_at = COALESCE(accepted_at, now()),
+                       ip = COALESCE($2, ip)
+                   WHERE user_id = $1`, [userId, ip])
     return
   }
-
-  const colsArr: string[] = ['user_id']
-  const valsArr: string[] = ['$1']
-  const params: any[] = [userId]
-  let i = 2
-  if (hasAcceptedAt) { colsArr.push('accepted_at'); valsArr.push('now()') }
-  else if (hasAccepted) { colsArr.push('accepted'); valsArr.push('TRUE') }
-  if (hasIp) { colsArr.push('ip'); valsArr.push(`$${i++}`); params.push(ip) }
-  if (hasEmail) { colsArr.push('user_email'); valsArr.push(`$${i++}`); params.push(null) }
-  await c.query(`INSERT INTO terms_acceptances (${colsArr.join(',')}) VALUES (${valsArr.join(',')})`, params)
+  await c.query(`INSERT INTO public.terms_acceptances (user_id, accepted_at, ip)
+                 VALUES ($1, now(), $2)`, [userId, ip])
 }
 
 /* --------------------------- 建立申請 --------------------------- */
@@ -168,10 +172,10 @@ const createHandler = async (req: Request, res: any) => {
 
   const c = await pool.connect()
   try {
-    const ip = (req.headers['x-forwarded-for'] as string) || (req.ip as string) || null
+    const ip = firstIp(req)
     const allowGuestTerms = (process.env.ALLOW_GUEST_TERMS ?? 'true').toLowerCase() === 'true'
 
-    const has = await c.query(`SELECT 1 FROM terms_acceptances WHERE user_id=$1 LIMIT 1`, [uid])
+    const has = await c.query(`SELECT 1 FROM public.terms_acceptances WHERE user_id=$1 LIMIT 1`, [uid])
     if (has.rowCount === 0) {
       if (allowGuestTerms) await upsertTermsAcceptance(c, uid, ip)
       else return res.status(403).json({ error: 'must_accept_terms' })
@@ -185,10 +189,11 @@ const createHandler = async (req: Request, res: any) => {
       const ov = await c.query(
         `
         SELECT id, start_ts, end_ts, venue
-        FROM bookings
+        FROM public.bookings
         WHERE status = 'approved'
-          AND venue = $3
-          AND tstzrange(start_ts, end_ts, $4) && tstzrange($1::timestamptz, $2::timestamptz, $4)
+          AND venue  = $3
+          AND tstzrange(start_ts, end_ts, $4)
+              && tstzrange($1::timestamptz, $2::timestamptz, $4)
         LIMIT 1
         `,
         [startEff.toISOString(), endEff.toISOString(), venue, rangeMode]
@@ -203,20 +208,26 @@ const createHandler = async (req: Request, res: any) => {
       }
     }
 
-    // 冪等鍵：同 user/場地/時段，5 分鐘視為同一鍵
+    // 冪等鍵：優先 body.client_key / header:x-idempotency-key；否則 5 分鐘桶的哈希
     let clientKey =
       (p.data.client_key && p.data.client_key.length ? p.data.client_key : undefined) ||
-      (req.headers['x-idempotency-key'] as string | undefined)
+      (Array.isArray(req.headers['x-idempotency-key'])
+        ? req.headers['x-idempotency-key']![0]
+        : (req.headers['x-idempotency-key'] as string | undefined))
+
     if (!clientKey) {
-      const seed = `${uid}|${venue}|${startEff.toISOString()}|${endEff.toISOString()}|${Math.floor(Date.now()/(5*60*1000))}`
+      const fiveMinBucket = Math.floor(Date.now() / (5 * 60 * 1000))
+      const seed = `${uid}|${venue}|${startEff.toISOString()}|${endEff.toISOString()}|${fiveMinBucket}`
       clientKey = createHash('sha256').update(seed).digest('hex').slice(0, 64)
     }
 
     const id = randomUUID()
     const ins = await c.query(
       `
-      INSERT INTO bookings (id, start_ts, end_ts, created_by, status, category, note, venue, client_key)
-      VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, $8)
+      INSERT INTO public.bookings
+        (id, start_ts, end_ts, created_by, status, category, note, venue, client_key)
+      VALUES
+        ($1, $2, $3, $4, 'pending', $5, $6, $7, $8)
       ON CONFLICT ON CONSTRAINT bookings_client_key_uniq DO NOTHING
       `,
       [id, startEff.toISOString(), endEff.toISOString(),
@@ -227,13 +238,22 @@ const createHandler = async (req: Request, res: any) => {
     let row: any
     if (ins.rowCount === 0) {
       const r = await c.query(
-        `SELECT id, start_ts, end_ts, created_by, status, category, note, venue FROM bookings WHERE client_key=$1 LIMIT 1`,
+        `SELECT id, start_ts, end_ts, created_by, status, category, note, venue
+         FROM public.bookings WHERE client_key=$1 LIMIT 1`,
         [clientKey]
       )
       row = r.rows[0]
     } else {
-      row = { id, start_ts: startEff.toISOString(), end_ts: endEff.toISOString(),
-        created_by: created_by ?? uid ?? null, status: 'pending', category: category ?? null, note: note ?? null, venue }
+      row = {
+        id,
+        start_ts: startEff.toISOString(),
+        end_ts:   endEff.toISOString(),
+        created_by: created_by ?? uid ?? null,
+        status: 'pending',
+        category: category ?? null,
+        note: note ?? null,
+        venue
+      }
     }
 
     await c.query('COMMIT')
@@ -266,7 +286,7 @@ bookingsRouter.get('/', async (_req, res) => {
   const { rows } = await pool.query(`
     SELECT id, start_ts, end_ts, created_at, created_by, status,
            reviewed_at, reviewed_by, rejection_reason, category, note, venue, client_key
-    FROM bookings
+    FROM public.bookings
     ORDER BY start_ts ASC
   `)
   res.json({ items: rows })
@@ -277,7 +297,7 @@ bookingsRouter.get('/approved', async (_req, res) => {
   if (!pool) return res.json({ items: [] })
   const { rows } = await pool.query(`
     SELECT id, start_ts, end_ts, created_by, category, note, venue
-    FROM bookings
+    FROM public.bookings
     WHERE status = 'approved'
     ORDER BY start_ts ASC
   `)
@@ -289,18 +309,24 @@ bookingsRouter.post('/:id/cancel', async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'db_unavailable' })
   const uid = effectiveUserId(req)
   if (!uid) return res.status(401).json({ error: 'unauthorized' })
+
   const id = req.params.id
   const c = await pool.connect()
   try {
     await c.query('BEGIN')
-    const f = await c.query(`SELECT id, created_by, status FROM bookings WHERE id=$1 LIMIT 1`, [id])
+    const f = await c.query(`SELECT id, created_by, status FROM public.bookings WHERE id=$1 LIMIT 1`, [id])
     if (f.rowCount === 0) { await c.query('ROLLBACK'); return res.status(404).json({ error: 'not_found' }) }
     const b = f.rows[0] as { id: string; created_by: string | null; status: string }
     if (!['pending', 'approved'].includes(b.status)) { await c.query('ROLLBACK'); return res.status(409).json({ error: 'invalid_status' }) }
     const admin = isAdmin(req)
     const owner = (b.created_by ?? '') === uid
     if (!(admin || owner)) { await c.query('ROLLBACK'); return res.status(403).json({ error: 'forbidden' }) }
-    await c.query(`UPDATE bookings SET status='cancelled', reviewed_at=now(), reviewed_by=$2 WHERE id=$1`, [id, admin ? uid : b.created_by])
+    await c.query(
+      `UPDATE public.bookings
+         SET status='cancelled', reviewed_at=now(), reviewed_by=$2
+       WHERE id=$1`,
+      [id, admin ? uid : b.created_by]
+    )
     await c.query('COMMIT')
     return res.json({ ok: true })
   } catch (e) {
@@ -313,7 +339,7 @@ bookingsRouter.post('/:id/cancel', async (req, res) => {
 bookingsRouter.get('/bookings', async (req, res) => {
   if (!pool) return res.json({ items: [] })
   const status = (req.query.status as string | undefined)?.trim()
-  const base = `SELECT id, start_ts, end_ts, created_at, created_by, status, reviewed_at, reviewed_by, rejection_reason, category, note, venue, client_key FROM bookings`
+  const base = `SELECT id, start_ts, end_ts, created_at, created_by, status, reviewed_at, reviewed_by, rejection_reason, category, note, venue, client_key FROM public.bookings`
   const sql = status ? `${base} WHERE status = $1 ORDER BY start_ts ASC` : `${base} ORDER BY start_ts ASC`
   const params = status ? [status] : []
   const { rows } = await pool.query(sql, params)
@@ -323,7 +349,7 @@ bookingsRouter.get('/bookings/approved', async (_req, res) => {
   if (!pool) return res.json({ items: [] })
   const { rows } = await pool.query(
     `SELECT id, start_ts, end_ts, created_by, category, note, venue
-     FROM bookings WHERE status='approved' ORDER BY start_ts ASC`
+     FROM public.bookings WHERE status='approved' ORDER BY start_ts ASC`
   )
   res.json({ items: rows })
 })

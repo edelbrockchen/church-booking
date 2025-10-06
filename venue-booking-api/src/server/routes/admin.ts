@@ -15,9 +15,10 @@ function loadAdmins(): AdminUser[] {
     const v = JSON.parse(raw)
     if (Array.isArray(v)) return v as AdminUser[]
     if (v && typeof v === 'object') {
+      // 舊格式 { "admin":"$2a$..." }
       return Object.entries(v).map(([username, passwordHash]) => ({ username, passwordHash: String(passwordHash) }))
     }
-  } catch {}
+  } catch { /* ignore */ }
   return []
 }
 const ADMIN_OPEN = (process.env.ADMIN_OPEN ?? 'false').toLowerCase() === 'true'
@@ -25,10 +26,13 @@ const ADMINS = loadAdmins()
 
 async function verifyPassword(stored: string | undefined, password: string): Promise<boolean> {
   if (!stored) return false
+  // bcrypt
   if (stored.startsWith('$2a$') || stored.startsWith('$2b$') || stored.startsWith('$2y$')) {
     try { return await bcrypt.compare(password, stored) } catch { return false }
   }
+  // 明文（不建議）：允許 "plain:xxx"
   if (stored.startsWith('plain:')) return stored.slice(6) === password
+  // 退而求其次：完全相等（不建議）
   return stored === password
 }
 
@@ -37,11 +41,15 @@ function isAdmin(req: Request): boolean {
 }
 function requireAdmin(req: Request, res: any): boolean {
   if (ADMIN_OPEN) {
+    // 免登入模式：自動給 admin session（只在你刻意開啟時）
     const sess: any = (req as any).session || ((req as any).session = {})
     if (!sess.user) sess.user = { id: 'admin', role: 'admin', name: 'Open Admin' }
     return true
   }
-  if (!isAdmin(req)) { res.status(401).json({ error: 'unauthorized', message: '請先登入' }); return false }
+  if (!isAdmin(req)) {
+    res.status(401).json({ error: 'unauthorized', message: '請先登入' })
+    return false
+  }
   return true
 }
 
@@ -76,12 +84,16 @@ adminRouter.post('/logout', (req, res) => {
   else { if (s?.user) delete s.user; res.json({ ok: true }) }
 })
 
-/* -------------------- 管理清單 -------------------- */
+/* -------------------- 管理清單（去重 + 一致統計） -------------------- */
+/**
+ * GET /api/admin/review?days=60&venue=全部&showFinished=true&q=關鍵字
+ * 回 { items:[...], stats:{pending,approved,rejected,cancelled} }
+ */
 adminRouter.get('/review', async (req, res) => {
   if (!requireAdmin(req, res)) return
   if (!pool) return res.json({ items: [], stats: { pending: 0, approved: 0, rejected: 0, cancelled: 0 } })
 
-  const days = Math.max(1, Math.min(365, Number(req.query.days ?? 60)))
+  const days = Math.max(1, Math.min(365, Number(req.query.days ?? 60) || 60))
   const now = new Date()
   const startRange = new Date(now.getTime() - days * 86400_000).toISOString()
   const endRange   = new Date(now.getTime() + days * 86400_000).toISOString()
@@ -95,40 +107,64 @@ adminRouter.get('/review', async (req, res) => {
   if (!showFinished) { where += ` AND end_ts > now()` }
   if (venue && venue !== '全部' && venue !== 'all') { where += ` AND venue = $${p++}`; params.push(venue) }
   if (q && q.length) {
-    where += ` AND (coalesce(created_by,'') ILIKE $${p} OR coalesce(venue,'') ILIKE $${p} OR coalesce(note,'') ILIKE $${p} OR coalesce(category,'') ILIKE $${p})`
+    where += ` AND (
+      coalesce(created_by,'') ILIKE $${p} OR
+      coalesce(venue,'')      ILIKE $${p} OR
+      coalesce(note,'')       ILIKE $${p} OR
+      coalesce(category,'')   ILIKE $${p}
+    )`
     params.push(`%${q}%`); p++
   }
 
-  // 以 client_key + 時段 + 場地 + 申請人 + 狀態 去重，選同組中 created_at 最新的那筆
-  const listSQL = `
-    WITH items AS (
+  // 去重關鍵：
+  // 有 client_key → 用 client_key；否則用 (created_by|venue|start_ts|end_ts|status) 做 md5 指紋
+  const dedupCTE = `
+    WITH base AS (
       SELECT
         id, start_ts, end_ts, created_at, created_by, status,
         reviewed_at, reviewed_by, rejection_reason, category, note, venue, client_key
-      FROM bookings
+      FROM public.bookings
       WHERE ${where}
+    ),
+    items AS (
+      SELECT
+        *,
+        COALESCE(
+          client_key,
+          md5(
+            COALESCE(created_by,'') || '|' || venue || '|' ||
+            to_char(start_ts, 'YYYY-MM-DD"T"HH24:MI:SSOF') || '|' ||
+            to_char(end_ts,   'YYYY-MM-DD"T"HH24:MI:SSOF') || '|' ||
+            status
+          )
+        ) AS dedup_key
+      FROM base
+    ),
+    dedup AS (
+      SELECT DISTINCT ON (dedup_key)
+        id, start_ts, end_ts, created_at, created_by, status,
+        reviewed_at, reviewed_by, rejection_reason, category, note, venue, client_key, dedup_key
+      FROM items
+      ORDER BY dedup_key, created_at DESC, id DESC
     )
-    SELECT DISTINCT ON (
-      COALESCE(client_key, ''),
-      start_ts, end_ts, venue,
-      COALESCE(created_by, ''),
-      status
-    )
+  `
+
+  const listSQL = `
+    ${dedupCTE}
+    SELECT
       id, start_ts, end_ts, created_at, created_by, status,
       reviewed_at, reviewed_by, rejection_reason, category, note, venue, client_key
-    FROM items
-    ORDER BY
-      COALESCE(client_key, ''),
-      start_ts, end_ts, venue, COALESCE(created_by, ''), status,
-      created_at DESC
+    FROM dedup
+    ORDER BY start_ts ASC, id ASC
   `
 
   const statSQL = `
+    ${dedupCTE}
     SELECT status, COUNT(*)::int AS n
-    FROM bookings
-    WHERE ${where}
+    FROM dedup
     GROUP BY status
   `
+
   try {
     const c = await pool.connect()
     try {
@@ -147,14 +183,18 @@ adminRouter.get('/review', async (req, res) => {
 async function doApprove(id: string, reviewer: string) {
   if (!pool) throw new Error('db_unavailable')
   await pool.query(
-    `UPDATE bookings SET status='approved', reviewed_at=now(), reviewed_by=$2, rejection_reason=NULL WHERE id=$1`,
+    `UPDATE public.bookings
+       SET status='approved', reviewed_at=now(), reviewed_by=$2, rejection_reason=NULL
+     WHERE id=$1`,
     [id, reviewer]
   )
 }
 async function doReject(id: string, reviewer: string, reason: string | null) {
   if (!pool) throw new Error('db_unavailable')
   await pool.query(
-    `UPDATE bookings SET status='rejected', reviewed_at=now(), reviewed_by=$2, rejection_reason=$3 WHERE id=$1`,
+    `UPDATE public.bookings
+       SET status='rejected', reviewed_at=now(), reviewed_by=$2, rejection_reason=$3
+     WHERE id=$1`,
     [id, reviewer, reason]
   )
 }
@@ -179,10 +219,12 @@ function rejectHandler(method: 'GET'|'POST') {
   }
 }
 adminRouter.post('/review/:id/approve', approveHandler('POST'))
-adminRouter.get('/review/:id/approve', approveHandler('GET'))
-adminRouter.post('/review/:id/reject',  rejectHandler('POST'))
-adminRouter.get('/review/:id/reject',  rejectHandler('GET'))
+adminRouter.get('/review/:id/approve',  approveHandler('GET'))
+adminRouter.post('/review/:id/reject',   rejectHandler('POST'))
+adminRouter.get('/review/:id/reject',    rejectHandler('GET'))
+
+// bookings 相容路徑（前端可能用）
 adminRouter.post('/bookings/:id/approve', approveHandler('POST'))
-adminRouter.get('/bookings/:id/approve', approveHandler('GET'))
-adminRouter.post('/bookings/:id/reject',  rejectHandler('POST'))
-adminRouter.get('/bookings/:id/reject',  rejectHandler('GET'))
+adminRouter.get('/bookings/:id/approve',   approveHandler('GET'))
+adminRouter.post('/bookings/:id/reject',   rejectHandler('POST'))
+adminRouter.get('/bookings/:id/reject',    rejectHandler('GET'))
