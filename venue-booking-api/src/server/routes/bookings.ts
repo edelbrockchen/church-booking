@@ -12,7 +12,7 @@ const pool = makePool()
 /* --------------------------- 常數/型別 --------------------------- */
 const AllowedCategories = ['教會聚會', '社團活動', '研習', '其他'] as const
 const AllowedVenues     = ['大會堂', '康樂廳', '其它教室'] as const
-const BlockedVenuesOnApproved = new Set(['大會堂', '康樂廳'])
+const BlockedVenuesOnApproved = new Set(['大會堂', '康樂廳']) // 僅核准後要互擋
 
 const createSchema = z.object({
   start: z.string().datetime(),
@@ -57,31 +57,24 @@ function effectiveUserId(req: Request): string | null {
 }
 
 /* --------------------------- schema 幫手 --------------------------- */
+// 建「唯一約束」供 ON CONFLICT 使用，避免重複插入
 async function ensureBookingsSchema() {
   if (!pool) return
   const c = await pool.connect()
   try {
     await c.query('BEGIN')
-
-    // 欄位：沒有就加
     await c.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS client_key TEXT`)
-
-    // （舊的作法）你可能已經有「部分唯一索引」：bookings_client_key_uq
-    //   留著也沒關係；下面加一個真正的「唯一約束」讓 ON CONFLICT 能正確對應。
     await c.query(`
       DO $$
       BEGIN
         IF NOT EXISTS (
-          SELECT 1
-          FROM pg_constraint
-          WHERE conname = 'bookings_client_key_uniq'
+          SELECT 1 FROM pg_constraint WHERE conname = 'bookings_client_key_uniq'
         ) THEN
           ALTER TABLE public.bookings
             ADD CONSTRAINT bookings_client_key_uniq UNIQUE (client_key);
         END IF;
       END$$;
     `)
-
     await c.query('COMMIT')
   } catch (e) {
     await c.query('ROLLBACK')
@@ -91,43 +84,39 @@ async function ensureBookingsSchema() {
   }
 }
 
-// 動態偵測 terms_acceptances 欄位，做 insert / update（不要求特定欄位存在）
+// 動態相容：不強制固定 terms_acceptances 欄位，能適配舊 schema
 async function upsertTermsAcceptance(c: any, userId: string, ip: string | null) {
-  // 若整張表不存在，先建一個最小版（不會覆蓋你已有的）
   await c.query(`
     CREATE TABLE IF NOT EXISTS terms_acceptances (
       user_id TEXT PRIMARY KEY,
       accepted_at TIMESTAMPTZ,
       user_email TEXT,
       ip TEXT
-    )`)
-
+    )
+  `)
   const cols = await c.query(`
     SELECT column_name FROM information_schema.columns
-    WHERE table_name='terms_acceptances' AND table_schema='public'`)
+    WHERE table_name='terms_acceptances' AND table_schema='public'
+  `)
   const set = new Set(cols.rows.map((r: any) => r.column_name as string))
   const hasAcceptedAt = set.has('accepted_at')
-  const hasAccepted   = set.has('accepted')     // 舊欄位（boolean）
+  const hasAccepted   = set.has('accepted') // 舊 boolean 欄位
   const hasIp         = set.has('ip')
   const hasEmail      = set.has('user_email')
 
-  // 先看此 user 是否已有記錄
   const has = await c.query(`SELECT 1 FROM terms_acceptances WHERE user_id=$1 LIMIT 1`, [userId])
   if (has.rowCount > 0) {
-    // UPDATE
     const parts: string[] = []
     const params: any[] = []
     let i = 1
     if (hasAcceptedAt) parts.push(`accepted_at = now()`)
     else if (hasAccepted) parts.push(`accepted = TRUE`)
     if (hasIp) { parts.push(`ip = $${i++}`); params.push(ip) }
-    // 不動 email；只更新必要欄位
     params.push(userId)
     if (parts.length) await c.query(`UPDATE terms_acceptances SET ${parts.join(', ')} WHERE user_id = $${i}`, params)
     return
   }
 
-  // INSERT
   const colsArr: string[] = ['user_id']
   const valsArr: string[] = ['$1']
   const params: any[] = [userId]
@@ -136,7 +125,6 @@ async function upsertTermsAcceptance(c: any, userId: string, ip: string | null) 
   else if (hasAccepted) { colsArr.push('accepted'); valsArr.push('TRUE') }
   if (hasIp) { colsArr.push('ip'); valsArr.push(`$${i++}`); params.push(ip) }
   if (hasEmail) { colsArr.push('user_email'); valsArr.push(`$${i++}`); params.push(null) }
-
   await c.query(`INSERT INTO terms_acceptances (${colsArr.join(',')}) VALUES (${valsArr.join(',')})`, params)
 }
 
@@ -149,16 +137,13 @@ const createHandler = async (req: Request, res: any) => {
   if (isNaN(startRaw.getTime()))   return res.status(400).json({ error: 'invalid_start' })
   if (isSundayTPE(startRaw))       return res.status(400).json({ error: 'sunday_disabled' })
 
-  // 台北規範：每日最早 07:00；晚間上限裁切；一次最多 3 小時
   const earliest = earliestOfDayTPE(startRaw)
   const startEff = startRaw.getTime() < earliest.getTime() ? earliest : startRaw
   const cap = latestCapTPE(startEff)
   const targetEnd = addHours(startEff, 3)
   const endEff = new Date(Math.min(targetEnd.getTime(), cap.getTime()))
   const truncated = endEff.getTime() < targetEnd.getTime()
-  if (endEff.getTime() <= startEff.getTime()) {
-    return res.status(409).json({ error: 'too_late' })
-  }
+  if (endEff.getTime() <= startEff.getTime()) return res.status(409).json({ error: 'too_late' })
 
   const venue = p.data.venue
   const category = (p.data.category as (typeof AllowedCategories)[number] | undefined) ?? undefined
@@ -166,18 +151,13 @@ const createHandler = async (req: Request, res: any) => {
   const created_by = p.data.created_by ?? undefined
 
   if (!pool) {
-    // 無 DB 模式
+    // 無 DB 模式（demo）
     return res.status(201).json({
       id: 'demo-' + Math.random().toString(36).slice(2),
       start: startEff.toISOString(),
       end:   endEff.toISOString(),
-      truncated,
-      persisted: false,
-      status: 'pending',
-      venue,
-      category: category ?? 'default',
-      note: note ?? '',
-      created_by: created_by ?? '',
+      truncated, persisted: false, status: 'pending',
+      venue, category: category ?? 'default', note: note ?? '', created_by: created_by ?? '',
     })
   }
 
@@ -188,22 +168,18 @@ const createHandler = async (req: Request, res: any) => {
 
   const c = await pool.connect()
   try {
-    const allowGuestTerms = (process.env.ALLOW_GUEST_TERMS ?? 'true').toLowerCase() === 'true'
     const ip = (req.headers['x-forwarded-for'] as string) || (req.ip as string) || null
+    const allowGuestTerms = (process.env.ALLOW_GUEST_TERMS ?? 'true').toLowerCase() === 'true'
 
-    // 條款：若未同意 → 允許訪客就自動寫入；否則 403
     const has = await c.query(`SELECT 1 FROM terms_acceptances WHERE user_id=$1 LIMIT 1`, [uid])
     if (has.rowCount === 0) {
-      if (allowGuestTerms) {
-        await upsertTermsAcceptance(c, uid, ip)
-      } else {
-        return res.status(403).json({ error: 'must_accept_terms' })
-      }
+      if (allowGuestTerms) await upsertTermsAcceptance(c, uid, ip)
+      else return res.status(403).json({ error: 'must_accept_terms' })
     }
 
     await c.query('BEGIN')
 
-    // 僅在「大會堂/康樂廳」檢查已核准重疊
+    // 僅在「大會堂／康樂廳」檢查已核准的重疊（半開區間 [)）
     if (BlockedVenuesOnApproved.has(venue)) {
       const rangeMode = '[)'
       const ov = await c.query(
@@ -227,7 +203,7 @@ const createHandler = async (req: Request, res: any) => {
       }
     }
 
-    // 冪等鍵（同使用者/時段/場地，5 分鐘內不重複）
+    // 冪等鍵：同 user/場地/時段，5 分鐘視為同一鍵
     let clientKey =
       (p.data.client_key && p.data.client_key.length ? p.data.client_key : undefined) ||
       (req.headers['x-idempotency-key'] as string | undefined)
@@ -241,11 +217,13 @@ const createHandler = async (req: Request, res: any) => {
       `
       INSERT INTO bookings (id, start_ts, end_ts, created_by, status, category, note, venue, client_key)
       VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, $8)
-      ON CONFLICT (client_key) DO NOTHING
+      ON CONFLICT ON CONSTRAINT bookings_client_key_uniq DO NOTHING
       `,
-      [id, startEff.toISOString(), endEff.toISOString(), created_by ?? uid ?? null, category ?? null, note ?? null, venue, clientKey]
+      [id, startEff.toISOString(), endEff.toISOString(),
+       created_by ?? uid ?? null, category ?? null, note ?? null, venue, clientKey]
     )
 
+    // 插不進去就撈舊的（冪等）
     let row: any
     if (ins.rowCount === 0) {
       const r = await c.query(
@@ -254,7 +232,8 @@ const createHandler = async (req: Request, res: any) => {
       )
       row = r.rows[0]
     } else {
-      row = { id, start_ts: startEff.toISOString(), end_ts: endEff.toISOString(), created_by: created_by ?? uid ?? null, status: 'pending', category: category ?? null, note: note ?? null, venue }
+      row = { id, start_ts: startEff.toISOString(), end_ts: endEff.toISOString(),
+        created_by: created_by ?? uid ?? null, status: 'pending', category: category ?? null, note: note ?? null, venue }
     }
 
     await c.query('COMMIT')
@@ -262,13 +241,8 @@ const createHandler = async (req: Request, res: any) => {
       id: row.id,
       start: new Date(row.start_ts).toISOString(),
       end:   new Date(row.end_ts).toISOString(),
-      truncated,
-      persisted: true,
-      status: row.status,
-      venue: row.venue,
-      category: row.category ?? 'default',
-      note: row.note ?? '',
-      created_by: row.created_by ?? '',
+      truncated, persisted: true, status: row.status,
+      venue: row.venue, category: row.category ?? 'default', note: row.note ?? '', created_by: row.created_by ?? '',
       client_key: clientKey,
     })
   } catch (e: any) {
@@ -281,31 +255,36 @@ const createHandler = async (req: Request, res: any) => {
   }
 }
 
-// 相容路徑：/api/ 與 /api/bookings
+/* --------------------------- 路由 --------------------------- */
+// 申請
 bookingsRouter.post('/', createHandler as any)
-bookingsRouter.post('/bookings', createHandler as any)
+bookingsRouter.post('/bookings', createHandler as any) // 相容
 
-/* --------------------------- 列表與取消 --------------------------- */
+// 列表：全部
 bookingsRouter.get('/', async (_req, res) => {
   if (!pool) return res.json({ items: [] })
   const { rows } = await pool.query(`
     SELECT id, start_ts, end_ts, created_at, created_by, status,
-           reviewed_at, reviewed_by, rejection_reason, category, note, venue
+           reviewed_at, reviewed_by, rejection_reason, category, note, venue, client_key
     FROM bookings
-    ORDER BY start_ts ASC`)
+    ORDER BY start_ts ASC
+  `)
   res.json({ items: rows })
 })
 
+// 列表：已核准
 bookingsRouter.get('/approved', async (_req, res) => {
   if (!pool) return res.json({ items: [] })
   const { rows } = await pool.query(`
     SELECT id, start_ts, end_ts, created_by, category, note, venue
     FROM bookings
     WHERE status = 'approved'
-    ORDER BY start_ts ASC`)
+    ORDER BY start_ts ASC
+  `)
   res.json({ items: rows })
 })
 
+// 取消
 bookingsRouter.post('/:id/cancel', async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'db_unavailable' })
   const uid = effectiveUserId(req)
@@ -330,11 +309,11 @@ bookingsRouter.post('/:id/cancel', async (req, res) => {
   } finally { c.release() }
 })
 
-// 相容清單路徑
+// 相容清單路由
 bookingsRouter.get('/bookings', async (req, res) => {
   if (!pool) return res.json({ items: [] })
   const status = (req.query.status as string | undefined)?.trim()
-  const base = `SELECT id, start_ts, end_ts, created_at, created_by, status, reviewed_at, reviewed_by, rejection_reason, category, note, venue FROM bookings`
+  const base = `SELECT id, start_ts, end_ts, created_at, created_by, status, reviewed_at, reviewed_by, rejection_reason, category, note, venue, client_key FROM bookings`
   const sql = status ? `${base} WHERE status = $1 ORDER BY start_ts ASC` : `${base} ORDER BY start_ts ASC`
   const params = status ? [status] : []
   const { rows } = await pool.query(sql, params)
@@ -344,6 +323,7 @@ bookingsRouter.get('/bookings/approved', async (_req, res) => {
   if (!pool) return res.json({ items: [] })
   const { rows } = await pool.query(
     `SELECT id, start_ts, end_ts, created_by, category, note, venue
-     FROM bookings WHERE status='approved' ORDER BY start_ts ASC`)
+     FROM bookings WHERE status='approved' ORDER BY start_ts ASC`
+  )
   res.json({ items: rows })
 })

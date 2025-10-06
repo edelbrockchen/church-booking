@@ -15,24 +15,20 @@ function loadAdmins(): AdminUser[] {
     const v = JSON.parse(raw)
     if (Array.isArray(v)) return v as AdminUser[]
     if (v && typeof v === 'object') {
-      // 也支援 { "admin":"$2a$..." } 舊格式
       return Object.entries(v).map(([username, passwordHash]) => ({ username, passwordHash: String(passwordHash) }))
     }
-  } catch { /* ignore */ }
+  } catch {}
   return []
 }
-const ADMIN_OPEN = (process.env.ADMIN_OPEN ?? 'false').toLowerCase() === 'true' // 建議預設 false
+const ADMIN_OPEN = (process.env.ADMIN_OPEN ?? 'false').toLowerCase() === 'true'
 const ADMINS = loadAdmins()
 
 async function verifyPassword(stored: string | undefined, password: string): Promise<boolean> {
   if (!stored) return false
-  // bcrypt
   if (stored.startsWith('$2a$') || stored.startsWith('$2b$') || stored.startsWith('$2y$')) {
     try { return await bcrypt.compare(password, stored) } catch { return false }
   }
-  // 明文（不建議）：允許 "plain:xxx"
   if (stored.startsWith('plain:')) return stored.slice(6) === password
-  // 退而求其次：完全相等（不建議）
   return stored === password
 }
 
@@ -41,52 +37,35 @@ function isAdmin(req: Request): boolean {
 }
 function requireAdmin(req: Request, res: any): boolean {
   if (ADMIN_OPEN) {
-    // 免登入模式：自動給 admin session（僅在你刻意開啟時）
     const sess: any = (req as any).session || ((req as any).session = {})
     if (!sess.user) sess.user = { id: 'admin', role: 'admin', name: 'Open Admin' }
     return true
   }
-  if (!isAdmin(req)) {
-    res.status(401).json({ error: 'unauthorized', message: '請先登入' })
-    return false
-  }
+  if (!isAdmin(req)) { res.status(401).json({ error: 'unauthorized', message: '請先登入' }); return false }
   return true
 }
 
 /* -------------------- 登入 / 登出 -------------------- */
-// 只回狀態，不自動登入
 adminRouter.get('/login', (req, res) => {
   const u = (req as any).session?.user
   res.json({ loggedIn: !!u, user: u ? { id: u.id, role: u.role, name: u.name } : null })
 })
 
-// 提交帳密登入：{ username, password }
-// 關鍵：❶先清舊 session → ❷驗證 → ❸成功才 regenerate() 重建新 session
 adminRouter.post('/login', async (req, res) => {
   const { username, password } = req.body || {}
-  if (!username || !password) {
-    return res.status(400).json({ error: 'missing_credentials', message: '請輸入帳號與密碼' })
-  }
+  if (!username || !password) return res.status(400).json({ error: 'missing_credentials', message: '請輸入帳號與密碼' })
 
-  // ❶ 清掉任何舊的登入狀態，避免「之前已登入」殘留
+  // 先清舊 session
   const sess: any = (req as any).session || ((req as any).session = {})
   if (sess.user) delete sess.user
 
-  // ❷ 驗證帳密
   const user = ADMINS.find(u => u.username === String(username))
   const ok = user && await verifyPassword(user.passwordHash || user.password, String(password))
-  if (!ok) {
-    if (sess.user) delete sess.user
-    return res.status(401).json({ error: 'bad_credentials', message: '帳號或密碼不正確' })
-  }
+  if (!ok) return res.status(401).json({ error: 'bad_credentials', message: '帳號或密碼不正確' })
 
-  // ❸ 成功：regenerate 以防 Session Fixation，並寫入 admin 身分
   req.session.regenerate(err => {
-    if (err) {
-      console.error('[admin/login] regenerate failed:', err)
-      return res.status(500).json({ error: 'server_error' })
-    }
-    (req as any).session.user = { id: user!.username, role: 'admin', name: user!.displayName || user!.username }
+    if (err) return res.status(500).json({ error: 'server_error' })
+    ;(req as any).session.user = { id: user!.username, role: 'admin', name: user!.displayName || user!.username }
     return res.json({ ok: true, user: (req as any).session.user })
   })
 })
@@ -98,10 +77,6 @@ adminRouter.post('/logout', (req, res) => {
 })
 
 /* -------------------- 管理清單 -------------------- */
-/**
- * GET /api/admin/review?days=60&venue=全部&showFinished=true&q=關鍵字
- * 回 { items:[...], stats:{pending,approved,rejected,cancelled} }
- */
 adminRouter.get('/review', async (req, res) => {
   if (!requireAdmin(req, res)) return
   if (!pool) return res.json({ items: [], stats: { pending: 0, approved: 0, rejected: 0, cancelled: 0 } })
@@ -124,13 +99,14 @@ adminRouter.get('/review', async (req, res) => {
     params.push(`%${q}%`); p++
   }
 
+  // 以 client_key 去重；沒有 client_key 就退回用 id
   const listSQL = `
-    SELECT DISTINCT ON (id)
+    SELECT DISTINCT ON (COALESCE(client_key, id))
            id, start_ts, end_ts, created_at, created_by, status,
-           reviewed_at, reviewed_by, rejection_reason, category, note, venue
+           reviewed_at, reviewed_by, rejection_reason, category, note, venue, client_key
     FROM bookings
     WHERE ${where}
-    ORDER BY id, start_ts ASC
+    ORDER BY COALESCE(client_key, id), created_at DESC
   `
   const statSQL = `
     SELECT status, COUNT(*)::int AS n
@@ -152,7 +128,7 @@ adminRouter.get('/review', async (req, res) => {
   }
 })
 
-/* -------------------- 核准 / 退回（相容：review/* 與 bookings/*；GET/POST 都支援） -------------------- */
+/* -------------------- 核准 / 退回（相容多路徑） -------------------- */
 async function doApprove(id: string, reviewer: string) {
   if (!pool) throw new Error('db_unavailable')
   await pool.query(
@@ -187,12 +163,10 @@ function rejectHandler(method: 'GET'|'POST') {
     catch (e) { console.error('[admin/reject] failed:', e); res.status(500).json({ error: 'server_error' }) }
   }
 }
-// review 路徑
 adminRouter.post('/review/:id/approve', approveHandler('POST'))
 adminRouter.get('/review/:id/approve', approveHandler('GET'))
 adminRouter.post('/review/:id/reject',  rejectHandler('POST'))
 adminRouter.get('/review/:id/reject',  rejectHandler('GET'))
-// bookings 相容路徑（前端可能用）
 adminRouter.post('/bookings/:id/approve', approveHandler('POST'))
 adminRouter.get('/bookings/:id/approve', approveHandler('GET'))
 adminRouter.post('/bookings/:id/reject',  rejectHandler('POST'))
