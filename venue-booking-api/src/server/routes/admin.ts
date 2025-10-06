@@ -15,13 +15,13 @@ function loadAdmins(): AdminUser[] {
     const v = JSON.parse(raw)
     if (Array.isArray(v)) return v as AdminUser[]
     if (v && typeof v === 'object') {
-      // 也支援 { "admin":"$2a$..." } 這種舊格式
+      // 也支援 { "admin":"$2a$..." } 舊格式
       return Object.entries(v).map(([username, passwordHash]) => ({ username, passwordHash: String(passwordHash) }))
     }
   } catch { /* ignore */ }
   return []
 }
-const ADMIN_OPEN = (process.env.ADMIN_OPEN ?? 'false').toLowerCase() === 'true' // 預設關閉免登入！
+const ADMIN_OPEN = (process.env.ADMIN_OPEN ?? 'false').toLowerCase() === 'true' // 建議預設 false
 const ADMINS = loadAdmins()
 
 async function verifyPassword(stored: string | undefined, password: string): Promise<boolean> {
@@ -41,13 +41,13 @@ function isAdmin(req: Request): boolean {
 }
 function requireAdmin(req: Request, res: any): boolean {
   if (ADMIN_OPEN) {
-    // 免登入模式：自動給 admin session（只在你刻意開啟時）
+    // 免登入模式：自動給 admin session（僅在你刻意開啟時）
     const sess: any = (req as any).session || ((req as any).session = {})
     if (!sess.user) sess.user = { id: 'admin', role: 'admin', name: 'Open Admin' }
     return true
   }
   if (!isAdmin(req)) {
-    res.status(401).json({ error: 'unauthorized' })
+    res.status(401).json({ error: 'unauthorized', message: '請先登入' })
     return false
   }
   return true
@@ -61,25 +61,40 @@ adminRouter.get('/login', (req, res) => {
 })
 
 // 提交帳密登入：{ username, password }
+// 關鍵：❶先清舊 session → ❷驗證 → ❸成功才 regenerate() 重建新 session
 adminRouter.post('/login', async (req, res) => {
   const { username, password } = req.body || {}
-  if (!username || !password) return res.status(400).json({ error: 'missing_credentials' })
+  if (!username || !password) {
+    return res.status(400).json({ error: 'missing_credentials', message: '請輸入帳號與密碼' })
+  }
 
-  const user = ADMINS.find(u => u.username === String(username))
-  if (!user) return res.status(401).json({ error: 'bad_credentials' })
-
-  const ok = await verifyPassword(user.passwordHash || user.password, String(password))
-  if (!ok) return res.status(401).json({ error: 'bad_credentials' })
-
+  // ❶ 清掉任何舊的登入狀態，避免「之前已登入」殘留
   const sess: any = (req as any).session || ((req as any).session = {})
-  sess.user = { id: user.username, role: 'admin', name: user.displayName || user.username }
-  res.json({ ok: true, user: sess.user })
+  if (sess.user) delete sess.user
+
+  // ❷ 驗證帳密
+  const user = ADMINS.find(u => u.username === String(username))
+  const ok = user && await verifyPassword(user.passwordHash || user.password, String(password))
+  if (!ok) {
+    if (sess.user) delete sess.user
+    return res.status(401).json({ error: 'bad_credentials', message: '帳號或密碼不正確' })
+  }
+
+  // ❸ 成功：regenerate 以防 Session Fixation，並寫入 admin 身分
+  req.session.regenerate(err => {
+    if (err) {
+      console.error('[admin/login] regenerate failed:', err)
+      return res.status(500).json({ error: 'server_error' })
+    }
+    (req as any).session.user = { id: user!.username, role: 'admin', name: user!.displayName || user!.username }
+    return res.json({ ok: true, user: (req as any).session.user })
+  })
 })
 
 adminRouter.post('/logout', (req, res) => {
   const s: any = (req as any).session
   if (s?.destroy) s.destroy(() => res.json({ ok: true }))
-  else { res.json({ ok: true }) }
+  else { if (s?.user) delete s.user; res.json({ ok: true }) }
 })
 
 /* -------------------- 管理清單 -------------------- */
