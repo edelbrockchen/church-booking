@@ -1,49 +1,58 @@
-// src/server/index.ts
 import express from 'express'
-import cors from 'cors'
 import session from 'express-session'
+import cors, { CorsOptions } from 'cors'
 import cookieParser from 'cookie-parser'
-
-// 路由
-import bookingsRouter from './routes/bookings'
-import termsRouter from './routes/terms.route' // 你的檔名是 terms.route.ts
-import { adminRouter } from './routes/admin'   // 👈 改成命名匯入
+import path from 'node:path'
+import { adminRouter } from './routes/admin'
+import bookingsRouter from './routes/bookings' // 若你的 bookings 是 default export，這行就對了
 
 const app = express()
-
-// 反向代理（Render）：讓 secure cookie 正常
-app.set('trust proxy', 1)
-
-// CORS：允許前端網域，並啟用 credentials（跨站 Cookie 必要）
-app.use(cors({
-  origin: process.env.CORS_ORIGIN, // 例：https://你的前端.onrender.com（尾端不要 /）
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'X-Requested-With'],
-}))
-
-app.use(cookieParser())
+app.set('trust proxy', 1) // ★ Render/反向代理後面必開，不然 secure cookie 會被丟掉
 app.use(express.json())
+app.use(cookieParser())
 
-// Session：跨網域一定要 SameSite=None + Secure
+// ----- CORS（把你的前端網址放到 CORS_ORIGIN）-----
+const ORIGINS = (process.env.CORS_ORIGIN ?? '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean)
+
+const corsOptions: CorsOptions = {
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true) // 同源/CLI（如 curl）放行
+    if (ORIGINS.length === 0 || ORIGINS.includes(origin)) return cb(null, true)
+    return cb(new Error(`CORS blocked: ${origin}`))
+  },
+  credentials: true, // ★ 允許帶 cookie
+}
+app.use(cors(corsOptions))
+
+// ----- Session（跨網域必須 SameSite=None + Secure）-----
+const SESSION_SECRET = process.env.SESSION_SECRET || 'change-me'
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'dev',
+  name: 'vb.sid',
+  secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
-  cookie: { httpOnly: true, sameSite: 'none', secure: true },
+  cookie: {
+    httpOnly: true,
+    sameSite: 'none',   // ★ 跨站必備
+    secure: true,       // ★ HTTPS 必備
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  },
 }))
 
-// 健康檢查（Render Health Check Path 可設 /api/health 或 /api/healthz）
-app.get('/api/health', (_req, res) => res.status(200).send('ok'))
-app.get('/api/healthz', (_req, res) => res.json({ ok: true }))
-
-// 掛載路由
+// ----- Routes -----
 app.use('/api/admin', adminRouter)
-app.use('/api', bookingsRouter)       // /api/bookings、/api/bookings/approved…
-app.use('/api/terms', termsRouter)    // /api/terms/status、/api/terms/accept
+app.use('/api/bookings', bookingsRouter)
 
-// 啟動
-const PORT = Number(process.env.PORT) || 3000
-app.listen(PORT, () => {
-  console.log(`[server] listening on :${PORT}`)
-})
+// 健康檢查
+app.get('/api/health', (_req, res) => res.json({ ok: true }))
+
+// （如有靜態檔）
+app.use(express.static(path.join(process.cwd(), 'public')))
+
+const PORT = Number(process.env.PORT || 3000)
+app.listen(PORT, () => console.log(`[server] listening on :${PORT}`))
+
+export default app

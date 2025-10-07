@@ -54,6 +54,12 @@ function requireAdmin(req: Request, res: any): boolean {
 }
 
 /* -------------------- 登入 / 登出 -------------------- */
+// ★ 新增：快速檢查目前是否已登入（前端好用）
+adminRouter.get('/me', (req, res) => {
+  const u = (req as any).session?.user
+  res.json({ authenticated: !!u, user: u ? { id: u.id, role: u.role, name: u.name } : null })
+})
+
 adminRouter.get('/login', (req, res) => {
   const u = (req as any).session?.user
   res.json({ loggedIn: !!u, user: u ? { id: u.id, role: u.role, name: u.name } : null })
@@ -74,6 +80,14 @@ adminRouter.post('/login', async (req, res) => {
   req.session.regenerate(err => {
     if (err) return res.status(500).json({ error: 'server_error' })
     ;(req as any).session.user = { id: user!.username, role: 'admin', name: user!.displayName || user!.username }
+
+    // ★ 補強：確保 session 立刻寫入（避免偶發性 401）
+    if (typeof req.session.save === 'function') {
+      return req.session.save(saveErr => {
+        if (saveErr) return res.status(500).json({ error: 'session_write_failed' })
+        return res.json({ ok: true, user: (req as any).session.user })
+      })
+    }
     return res.json({ ok: true, user: (req as any).session.user })
   })
 })
@@ -116,8 +130,6 @@ adminRouter.get('/review', async (req, res) => {
     params.push(`%${q}%`); p++
   }
 
-  // 去重關鍵：
-  // 有 client_key → 用 client_key；否則用 (created_by|venue|start_ts|end_ts|status) 做 md5 指紋
   const dedupCTE = `
     WITH base AS (
       SELECT
