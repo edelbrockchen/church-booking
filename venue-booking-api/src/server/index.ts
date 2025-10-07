@@ -5,11 +5,13 @@ import cookieParser from 'cookie-parser'
 import path from 'node:path'
 import { adminRouter } from './routes/admin'
 import bookingsRouter from './routes/bookings' // 若你的 bookings 是 default export，這行就對了
+import termsRouter from './routes/terms'
 
 const app = express()
 app.set('trust proxy', 1) // ★ Render/反向代理後面必開，不然 secure cookie 會被丟掉
 app.use(express.json())
 app.use(cookieParser())
+app.use('/api/terms', termsRouter)
 
 // ----- CORS（把你的前端網址放到 CORS_ORIGIN）-----
 const ORIGINS = (process.env.CORS_ORIGIN ?? '')

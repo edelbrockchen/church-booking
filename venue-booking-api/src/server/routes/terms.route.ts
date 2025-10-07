@@ -8,6 +8,11 @@ export default termsRouter
 
 const pool = makePool()
 
+// 可用環境變數控制條款開關/版本/連結（前端好判斷）
+const TERMS_ENABLED = (process.env.TERMS_ENABLED ?? 'true').toLowerCase() === 'true'
+const TERMS_VERSION = process.env.TERMS_VERSION ?? 'v1'
+const TERMS_URL     = process.env.TERMS_URL ?? ''
+
 function getUserId(req: Request): string | null {
   return (req as any).session?.user?.id ?? null
 }
@@ -18,7 +23,8 @@ function effectiveUserId(req: Request): string | null {
   if (uid) return uid
   const allowGuest = (process.env.ALLOW_GUEST_TERMS ?? 'true').toLowerCase() === 'true'
   if (!allowGuest) return null
-  const ip = (req.headers['x-forwarded-for'] as string) || (req.ip as string) || 'unknown'
+  const xff = (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim()
+  const ip = xff || (req.ip as string) || 'unknown'
   return `guest:${ip}`
 }
 
@@ -66,13 +72,24 @@ async function ensureSchema() {
   }
 }
 
-/** GET /api/terms/status -> { accepted: boolean, accepted_at: string|null } */
+/** GET /api/terms/status -> { ok, enabled, version, url, accepted, accepted_at } */
 termsRouter.get('/status', async (req, res) => {
   const uid = effectiveUserId(req)
-  if (!uid) return res.json({ accepted: false, accepted_at: null })
+  // 若不允許訪客且未登入，或整體關閉，直接回未同意
+  if (!TERMS_ENABLED) {
+    return res.json({ ok: true, enabled: false, version: TERMS_VERSION, url: TERMS_URL || null, accepted: true, accepted_at: null })
+  }
+  if (!uid) {
+    return res.json({ ok: true, enabled: true, version: TERMS_VERSION, url: TERMS_URL || null, accepted: false, accepted_at: null })
+  }
 
-  // 沒有 DB：直接回已同意，避免前端流程卡住
-  if (!pool) return res.json({ accepted: true, accepted_at: new Date().toISOString() })
+  // 沒有 DB：直接回「已同意」（避免前端流程卡住），沿用你原本的精神
+  if (!pool) {
+    return res.json({
+      ok: true, enabled: true, version: TERMS_VERSION, url: TERMS_URL || null,
+      accepted: true, accepted_at: new Date().toISOString()
+    })
+  }
 
   try {
     await ensureSchema()
@@ -81,18 +98,22 @@ termsRouter.get('/status', async (req, res) => {
       [uid]
     )
     if (r.rowCount && r.rows[0]?.accepted_at) {
-      return res.json({ accepted: true, accepted_at: r.rows[0].accepted_at })
+      return res.json({
+        ok: true, enabled: true, version: TERMS_VERSION, url: TERMS_URL || null,
+        accepted: true, accepted_at: r.rows[0].accepted_at
+      })
     }
-    return res.json({ accepted: false, accepted_at: null })
+    return res.json({ ok: true, enabled: true, version: TERMS_VERSION, url: TERMS_URL || null, accepted: false, accepted_at: null })
   } catch (e) {
     console.error('[terms] status failed:', (e as any)?.code, (e as any)?.message)
     // 安全回覆（避免前端陷入 500）：視為尚未同意
-    return res.json({ accepted: false, accepted_at: null })
+    return res.json({ ok: true, enabled: true, version: TERMS_VERSION, url: TERMS_URL || null, accepted: false, accepted_at: null })
   }
 })
 
-/** POST /api/terms/accept -> { ok: true, accepted_at: string } */
+/** POST /api/terms/accept -> { ok: true, accepted_at } */
 termsRouter.post('/accept', async (req, res) => {
+  if (!TERMS_ENABLED) return res.json({ ok: true, accepted_at: null })
   const uid = effectiveUserId(req)
   if (!uid) return res.status(401).json({ error: 'unauthorized' })
 
@@ -121,10 +142,12 @@ termsRouter.post('/accept', async (req, res) => {
         [uid, email]
       )
     } else {
+      const xff = (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim()
+      const ip = xff || (req.ip as string) || null
       await c.query(
         `INSERT INTO terms_acceptances (id, user_id, user_email, accepted_at, ip)
          VALUES ($1, $2, $3, now(), $4)`,
-        [randomUUID(), uid, email, (req.headers['x-forwarded-for'] as string) || req.ip || null]
+        [randomUUID(), uid, email, ip]
       )
     }
 
