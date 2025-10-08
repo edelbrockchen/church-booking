@@ -4,8 +4,8 @@ import cors, { type CorsOptions } from 'cors'
 import cookieParser from 'cookie-parser'
 import path from 'node:path'
 import { adminRouter } from './routes/admin'
-import bookingsRouter from './routes/bookings'   // 若 bookings 是 default export，這行正確
-import termsRouter from './routes/terms.route'   // 對應 terms.route.ts
+import bookingsRouter from './routes/bookings'
+import termsRouter from './routes/terms.route'
 
 const app = express()
 
@@ -29,7 +29,7 @@ const ORIGINS = (process.env.CORS_ORIGIN ?? '')
 const corsOptions: CorsOptions = {
   origin(origin, cb) {
     if (FRONTEND_PROXY) return cb(null, true)   // 同源：直接放行
-    if (!origin) return cb(null, true)          // 同源或 CLI 請求（如 curl）
+    if (!origin) return cb(null, true)          // 同源或 CLI（如 curl）
     if (ORIGINS.length === 0 || ORIGINS.includes(origin)) return cb(null, true)
     return cb(new Error(`CORS blocked: ${origin}`))
   },
@@ -42,8 +42,7 @@ app.use(cors(corsOptions))
 const SESSION_SECRET = process.env.SESSION_SECRET || 'change-me'
 const IS_DEV = process.env.NODE_ENV === 'development'
 
-// 兩種模式：同源(Lax) / 跨站(None)
-// 跨站可再啟用分割式 Cookie（CHIPS）
+// 兩種模式：同源(Lax) / 跨站(None)；跨站可啟用分割式 Cookie（CHIPS）
 const cookieOptions: session.CookieOptions = {
   httpOnly: true,
   sameSite: (FRONTEND_PROXY ? 'lax' : 'none'),
@@ -51,13 +50,13 @@ const cookieOptions: session.CookieOptions = {
   maxAge: 7 * 24 * 60 * 60 * 1000,
 }
 
+// 若為跨站直連，且想在封鎖第三方 Cookie 下也可用 → 啟用 Partitioned
 const COOKIE_PARTITIONED = ['1', 'true', 'yes'].includes(
   String(process.env.COOKIE_PARTITIONED ?? process.env.ENABLE_PARTITIONED_COOKIES ?? 'false').toLowerCase()
 )
 if (!FRONTEND_PROXY && COOKIE_PARTITIONED) {
-  // 型別尚未收錄 Partitioned，使用斷言
-  // @ts-expect-error partitioned 尚未在型別中
-  cookieOptions.partitioned = true
+  // express-session 型別尚未收錄 Partitioned，使用 any 斷言設定屬性
+  (cookieOptions as any).partitioned = true
 }
 
 app.use(session({
@@ -82,8 +81,7 @@ app.get('/api/health', (_req, res) => {
     cookie: {
       sameSite: cookieOptions.sameSite,
       secure: cookieOptions.secure,
-      // @ts-ignore 僅用於除錯顯示
-      partitioned: Boolean(cookieOptions.partitioned),
+      partitioned: Boolean((cookieOptions as any).partitioned),
     },
   })
 })
