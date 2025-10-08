@@ -58,11 +58,16 @@ if (!FRONTEND_PROXY && COOKIE_PARTITIONED) {
 }
 
 app.use(session({
+ app.use(session({
   name: 'vb.sid',
-  secret: SESSION_SECRET,
+  secret: process.env.SESSION_SECRET || 'change-me',
   resave: false,
   saveUninitialized: false,
-  cookie: cookieOptions,
+  cookie: {
+    httpOnly: true,
+    sameSite: 'lax',      // 同源/同站用 Lax：不受第三方 Cookie 封鎖
+    secure: true,         // Render 走 HTTPS
+    maxAge: 7 * 24 * 60 * 60 * 1000,
 }))
 
 /* -------------------------- Routes -------------------------- */
