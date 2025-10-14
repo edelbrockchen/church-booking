@@ -65,7 +65,10 @@ const LoginBody = z.object({
 router.post('/login', async (req, res) => {
   const parsed = LoginBody.safeParse(req.body)
   if (!parsed.success) return res.status(400).json({ error: 'invalid_body' })
-  const { username, password } = parsed.data
+
+  // Normalise（避免帳號前後空白/大小寫差異造成困擾）
+  const username = parsed.data.username.trim()
+  const password = parsed.data.password
 
   const users = getUsersFromEnv()
   const expected = users[username]
@@ -74,8 +77,15 @@ router.post('/login', async (req, res) => {
   const ok = await verifyPassword(password, expected)
   if (!ok) return res.status(401).json({ error: 'invalid_credentials' })
 
-  req.session.admin = { user: username }
-  return res.json({ ok: true, user: username })
+  // 防 Session Fixation：登入時重新產生 session id
+  req.session.regenerate((err) => {
+    if (err) {
+      console.error('[admin] session regenerate failed:', err)
+      return res.status(500).json({ error: 'session_error' })
+    }
+    req.session.admin = { user: username }
+    return res.json({ ok: true, user: username })
+  })
 })
 
 router.get('/me', (req, res) => {
@@ -83,7 +93,10 @@ router.get('/me', (req, res) => {
 })
 
 router.post('/logout', (req, res) => {
+  const sidCookieName = (req.session as any)?.cookie?.name || 'connect.sid'
   req.session?.destroy(() => {})
+  // 嘗試清 Cookie（即使跨網域不一定成功，仍無害）
+  res.clearCookie(sidCookieName, { sameSite: 'none', secure: true })
   res.json({ ok: true })
 })
 
@@ -93,13 +106,16 @@ router.post('/logout', (req, res) => {
 // Expected front-end params (all optional):
 // days: number (default 60)
 // venue: string
-// includeEnded: 'true' | 'false' (default false)
+// includeEnded: 'true' | 'false' (default false)  // alias: showFinished=true
 // q: string (search)
 
 router.get('/review', requireAdmin, async (req, res) => {
-  const days = Math.max(1, Math.min(365, Number(req.query.days ?? 60)))
+  if (!pool) return res.status(503).json({ error: 'db_unavailable' })
+
+  const rawDays = Number(req.query.days)
+  const days = Number.isFinite(rawDays) ? Math.max(1, Math.min(365, rawDays)) : 60
   const venue = typeof req.query.venue === 'string' && req.query.venue.trim() !== '' ? req.query.venue.trim() : null
-  const includeEnded = String(req.query.includeEnded ?? 'false') === 'true'
+  const includeEnded = String((req.query as any).includeEnded ?? (req.query as any).showFinished ?? 'false') === 'true'
   const q = typeof req.query.q === 'string' && req.query.q.trim() !== '' ? req.query.q.trim().toLowerCase() : null
 
   const client = await pool.connect()
@@ -147,11 +163,12 @@ router.get('/review', requireAdmin, async (req, res) => {
 
 // Optional CSV export (used by "匯出 CSV")
 router.get('/review.csv', requireAdmin, async (req, res) => {
-  // Delegate to JSON handler to keep filters identical
-  ;(req as any).query = { ...req.query }
-  const days = Math.max(1, Math.min(365, Number(req.query.days ?? 60)))
+  if (!pool) return res.status(503).json({ error: 'db_unavailable' })
+
+  const rawDays = Number(req.query.days)
+  const days = Number.isFinite(rawDays) ? Math.max(1, Math.min(365, rawDays)) : 60
   const venue = typeof req.query.venue === 'string' && req.query.venue.trim() !== '' ? req.query.venue.trim() : null
-  const includeEnded = String(req.query.includeEnded ?? 'false') === 'true'
+  const includeEnded = String((req.query as any).includeEnded ?? (req.query as any).showFinished ?? 'false') === 'true'
   const q = typeof req.query.q === 'string' && req.query.q.trim() !== '' ? req.query.q.trim().toLowerCase() : null
 
   const client = await pool.connect()
@@ -186,7 +203,7 @@ router.get('/review.csv', requireAdmin, async (req, res) => {
         r.status ?? '',
         r.category ?? '',
         r.venue ?? '',
-        (r.note ?? '').replaceAll('\n', ' ').replaceAll('"', '""'),
+        String(r.note ?? '').replaceAll('\n', ' ').replaceAll('"', '""'),
       ].map((v) => `"${String(v ?? '')}"`).join(',')
       csv.push(line)
     }
