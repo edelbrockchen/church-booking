@@ -1,70 +1,205 @@
-// src/server/routes/admin.ts — hardened login + guards + quick whoami
-import { Router } from 'express'
+// src/server/routes/admin.ts
+import { Router, type Request, type Response, type NextFunction } from 'express'
 import bcrypt from 'bcryptjs'
+import { z } from 'zod'
+import { makePool } from '../db'
+
+// --------------------------------------------------
+// Types & Session typing
+// --------------------------------------------------
+declare module 'express-session' {
+  interface SessionData {
+    admin?: { user: string }
+  }
+}
 
 const router = Router()
-export default router
+const pool = makePool() // NOTE: do not connect here; connect inside handlers
 
-// 讀取環境的管理者帳號（JSON 物件：{ "user": "plainPassword", ... } 或雜湊）
-function getUsers(): Record<string, string> {
+// --------------------------------------------------
+// Helpers
+// --------------------------------------------------
+function getUsersFromEnv(): Record<string, string> {
+  // Preferred: ADMIN_USERS_JSON = { "user": "$2b$10$hash..." }
+  const adminUsersJson = process.env.ADMIN_USERS_JSON
+  if (adminUsersJson) {
+    try {
+      const obj = JSON.parse(adminUsersJson)
+      if (obj && typeof obj === 'object') return obj as Record<string, string>
+    } catch (err) {
+      console.error('[admin] Failed to parse ADMIN_USERS_JSON:', err)
+    }
+  }
+  // Legacy: ADMIN_PASSWORD=plain or bcrypt hash for default user "admin"
+  if (process.env.ADMIN_PASSWORD) {
+    return { admin: process.env.ADMIN_PASSWORD }
+  }
+  return {}
+}
+
+function isBcryptHash(str: string): boolean {
+  return typeof str === 'string' && /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/.test(str)
+}
+
+async function verifyPassword(input: string, expected: string): Promise<boolean> {
+  if (isBcryptHash(expected)) {
+    return await bcrypt.compare(input, expected)
+  }
+  // If expected is plain text (legacy), compare directly
+  return input === expected
+}
+
+function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  if (req.session?.admin) return next()
+  return res.status(401).json({ error: 'unauthorized' })
+}
+
+// --------------------------------------------------
+// Auth endpoints
+// --------------------------------------------------
+const LoginBody = z.object({
+  username: z.string().min(1),
+  password: z.string().min(1),
+})
+
+router.post('/login', async (req, res) => {
+  const parsed = LoginBody.safeParse(req.body)
+  if (!parsed.success) return res.status(400).json({ error: 'invalid_body' })
+  const { username, password } = parsed.data
+
+  const users = getUsersFromEnv()
+  const expected = users[username]
+  if (!expected) return res.status(401).json({ error: 'invalid_credentials' })
+
+  const ok = await verifyPassword(password, expected)
+  if (!ok) return res.status(401).json({ error: 'invalid_credentials' })
+
+  req.session.admin = { user: username }
+  return res.json({ ok: true, user: username })
+})
+
+router.get('/me', (req, res) => {
+  res.json({ admin: req.session?.admin ?? null })
+})
+
+router.post('/logout', (req, res) => {
+  req.session?.destroy(() => {})
+  res.json({ ok: true })
+})
+
+// --------------------------------------------------
+// Review list
+// --------------------------------------------------
+// Expected front-end params (all optional):
+// days: number (default 60)
+// venue: string
+// includeEnded: 'true' | 'false' (default false)
+// q: string (search)
+
+router.get('/review', requireAdmin, async (req, res) => {
+  const days = Math.max(1, Math.min(365, Number(req.query.days ?? 60)))
+  const venue = typeof req.query.venue === 'string' && req.query.venue.trim() !== '' ? req.query.venue.trim() : null
+  const includeEnded = String(req.query.includeEnded ?? 'false') === 'true'
+  const q = typeof req.query.q === 'string' && req.query.q.trim() !== '' ? req.query.q.trim().toLowerCase() : null
+
+  const client = await pool.connect()
   try {
-    const raw = process.env.ADMIN_USERS_JSON || '{}'
-    return JSON.parse(raw)
-  } catch {
-    return {}
+    const where: string[] = []
+    const params: any[] = []
+
+    // Time window
+    params.push(days)
+    where.push(`start_ts >= (now() - ($${params.length}::text || ' days')::interval)`) // now - '<days> days'
+
+    if (!includeEnded) {
+      where.push('end_ts >= now()')
+    }
+
+    if (venue) {
+      params.push(venue)
+      where.push(`venue = $${params.length}`)
+    }
+
+    if (q) {
+      // Search in a few columns
+      params.push(`%${q}%`)
+      const p = `$${params.length}`
+      where.push(`(lower(coalesce(note,'')||' '||coalesce(category,'')||' '||coalesce(venue,'')||' '||coalesce(created_by,''))) like ${p}`)
+    }
+
+    const sql = `
+      SELECT id, start_ts, end_ts, created_at, created_by, status, category, venue, note
+      FROM bookings
+      ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+      ORDER BY start_ts DESC
+      LIMIT 500
+    `
+
+    const { rows } = await client.query(sql, params)
+    res.json({ items: rows })
+  } catch (err) {
+    console.error('[admin] review error:', err)
+    res.status(500).json({ error: 'internal_error' })
+  } finally {
+    client.release()
   }
-}
+})
 
-// 密碼比對：支援明文或 bcrypt 雜湊（以 $2a/$2b/$2y 開頭視為雜湊）
-async function verifyPassword(pass: string, target: string): Promise<boolean> {
-  if (/^\$2[aby]\$/.test(target)) {
-    return await bcrypt.compare(pass, target)
+// Optional CSV export (used by "匯出 CSV")
+router.get('/review.csv', requireAdmin, async (req, res) => {
+  // Delegate to JSON handler to keep filters identical
+  ;(req as any).query = { ...req.query }
+  const days = Math.max(1, Math.min(365, Number(req.query.days ?? 60)))
+  const venue = typeof req.query.venue === 'string' && req.query.venue.trim() !== '' ? req.query.venue.trim() : null
+  const includeEnded = String(req.query.includeEnded ?? 'false') === 'true'
+  const q = typeof req.query.q === 'string' && req.query.q.trim() !== '' ? req.query.q.trim().toLowerCase() : null
+
+  const client = await pool.connect()
+  try {
+    const where: string[] = []
+    const params: any[] = []
+
+    params.push(days)
+    where.push(`start_ts >= (now() - ($${params.length}::text || ' days')::interval)`) 
+    if (!includeEnded) where.push('end_ts >= now()')
+    if (venue) { params.push(venue); where.push(`venue = $${params.length}`) }
+    if (q) { params.push(`%${q}%`); const p = `$${params.length}`; where.push(`(lower(coalesce(note,'')||' '||coalesce(category,'')||' '||coalesce(venue,'')||' '||coalesce(created_by,''))) like ${p}`) }
+
+    const sql = `
+      SELECT id, start_ts, end_ts, created_at, created_by, status, category, venue, note
+      FROM bookings
+      ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+      ORDER BY start_ts DESC
+      LIMIT 2000
+    `
+
+    const { rows } = await client.query(sql, params)
+    const header = ['id','start_ts','end_ts','created_at','created_by','status','category','venue','note']
+    const csv = [header.join(',')]
+    for (const r of rows) {
+      const line = [
+        r.id,
+        new Date(r.start_ts).toISOString(),
+        new Date(r.end_ts).toISOString(),
+        new Date(r.created_at).toISOString(),
+        r.created_by ?? '',
+        r.status ?? '',
+        r.category ?? '',
+        r.venue ?? '',
+        (r.note ?? '').replaceAll('\n', ' ').replaceAll('"', '""'),
+      ].map((v) => `"${String(v ?? '')}"`).join(',')
+      csv.push(line)
+    }
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+    res.setHeader('Content-Disposition', 'attachment; filename="review.csv"')
+    res.send(csv.join('\n'))
+  } catch (err) {
+    console.error('[admin] review.csv error:', err)
+    res.status(500).json({ error: 'internal_error' })
+  } finally {
+    client.release()
   }
-  return pass === target
-}
-
-// 保護中介層
-function mustLogin(req: any, res: any, next: any) {
-  if (req.session?.user?.role === 'admin') return next()
-  return res.status(401).json({ error: 'UNAUTHORIZED' })
-}
-
-/* ------------------------------ routes ------------------------------ */
-
-// 登入
-router.post('/login', async (req: any, res) => {
-  const { username, password } = req.body || {}
-  if (!username || !password) return res.status(400).json({ error: 'MISSING_CREDENTIALS' })
-
-  const users = getUsers()
-  const target = users[username]
-  if (!target) return res.status(401).json({ error: 'BAD_CREDENTIALS' })
-
-  const ok = await verifyPassword(password, target)
-  if (!ok) return res.status(401).json({ error: 'BAD_CREDENTIALS' })
-
-  req.session.regenerate((err: any) => {
-    if (err) return res.status(500).json({ error: 'SESSION_REGENERATE_FAILED' })
-    req.session.user = { id: username, role: 'admin' }
-    req.session.save((err2: any) => {
-      if (err2) return res.status(500).json({ error: 'SESSION_SAVE_FAILED' })
-      return res.json({ ok: true, user: req.session.user })
-    })
-  })
 })
 
-// 登出
-router.post('/logout', (req: any, res) => {
-  req.session.destroy(() => res.json({ ok: true }))
-})
-
-// 身分檢查（給前端調試用）
-router.get('/whoami', (req: any, res) => {
-  res.json({ ok: true, user: req.session?.user || null })
-})
-
-// 管理審核清單（示例：實務請改連資料庫）
-router.get('/review', mustLogin, async (_req, res) => {
-  // 請接資料庫；這裡回空陣列結構
-  res.json({ ok: true, items: [] })
-})
+export default router

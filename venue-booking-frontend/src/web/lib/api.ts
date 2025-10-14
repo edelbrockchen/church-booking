@@ -1,69 +1,81 @@
 // venue-booking-frontend/src/web/lib/api.ts
-// 相容舊寫法：提供 apiGet / apiPost / apiPut / apiDelete
-// ★ 強制所有請求帶上 credentials: 'include'
-// ★ 支援兩種模式：
-//   1) 前端反向代理（推薦）：VITE_USE_FRONTEND_PROXY=1，程式就用相對路徑 /api/...（第一方 cookie，不會被「封鎖第三方 Cookie」影響）
-//   2) 直連後端網址：設定 VITE_API_BASE_URL（或相容舊變數 VITE_API_BASE）
+// 統一封裝前端呼叫後端 API：
+// - 強制帶上 credentials（跨網域 Session Cookie）
+// - 同時支援「前端代理」與「直連後端」兩種模式
+// - 型別與目前後端路由（admin/terms/bookings）對齊
 
-// ---- API Base 決策 ----
+/* ------------------------------------
+ * API Base 決策
+ * ------------------------------------ */
 const DEFAULT_DIRECT_BASE = 'https://venue-booking-api-rjes.onrender.com'
-const DEFAULT_API_BASE =
-  import.meta.env.VITE_USE_FRONTEND_PROXY === '1'
-    ? '' // 走同源代理：/api/...
-    : DEFAULT_DIRECT_BASE
 
-const RAW_BASE =
+const USE_PROXY = import.meta.env.VITE_USE_FRONTEND_PROXY === '1'
+const DIRECT_BASE = (
   import.meta.env.VITE_API_BASE_URL ||
   import.meta.env.VITE_API_BASE ||
-  DEFAULT_API_BASE
+  DEFAULT_DIRECT_BASE
+).replace(/\/$/, '')
 
-const API_BASE = (RAW_BASE || '').replace(/\/+$/, '')
+// 代理模式：回傳相對路徑（/api/...），必須在本機 devServer 或 CDN/站台設定對 /api 的反向代理
+export const API_BASE = USE_PROXY ? '' : DIRECT_BASE
 
-// ---- Helper: 判斷是否為絕對 URL ----
+/* ------------------------------------
+ * URL 工具
+ * ------------------------------------ */
 function isAbsoluteUrl(u: string) {
   return /^https?:\/\//i.test(u)
 }
 
-// ---- URL 組裝 ----
 export function apiUrl(path: string) {
   const clean = path?.startsWith('/') ? path : `/${path || ''}`
-  // 若採用前端代理（API_BASE===''），直接回相對路徑，讓瀏覽器打同源的 /api/...
-  if (API_BASE === '') return clean
+  if (API_BASE === '' || isAbsoluteUrl(clean)) return clean
   return `${API_BASE}${clean}`
 }
 
-// ---- 統一 fetch（必帶 credentials）----
+/* ------------------------------------
+ * 低階 fetch + JSON helper
+ * ------------------------------------ */
 export async function apiFetch(input: string, init: RequestInit = {}) {
   const url = isAbsoluteUrl(input) ? input : apiUrl(input)
   const headers = new Headers(init.headers || {})
-  if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
+  // 只有在有 body 時才預設 JSON Content-Type，避免 GET/HEAD 帶 content-type 造成部分 CDN 誤判
+  if (!headers.has('Content-Type') && init.body != null) headers.set('Content-Type', 'application/json')
 
   const r = await fetch(url, {
     ...init,
     headers,
-    // 重要：跨站情境/同站皆帶 cookie
-    credentials: 'include',
+    credentials: 'include', // 關鍵：跨站/同站都帶 Cookie
   })
   return r
 }
 
 export async function apiJson<T = any>(input: string, init: RequestInit = {}) {
   const r = await apiFetch(input, init)
+  // 不是 2xx → 盡量提取可讀錯誤
   if (!r.ok) {
     let msg = ''
     try {
-      const t = await r.text()
-      msg = t?.slice(0, 300) || ''
-    } catch { /* ignore */ }
+      const ct = r.headers.get('content-type') || ''
+      if (ct.includes('application/json')) {
+        const j: any = await r.json()
+        msg = typeof j?.error === 'string' ? j.error : JSON.stringify(j)
+      } else {
+        msg = (await r.text())?.slice(0, 500) || ''
+      }
+    } catch {
+      /* ignore */
+    }
     throw new Error(`HTTP ${r.status}${msg ? `: ${msg}` : ''}`)
   }
   const ct = r.headers.get('content-type') || ''
   if (ct.includes('application/json')) return (await r.json()) as T
-  // 沒有內容（例如 204）或非 JSON，就回 null
+  // 非 JSON（例如 204），回 null
   return null as unknown as T
 }
 
-// —— 相容舊的四個 helper —— //
+/* ------------------------------------
+ * 相容舊 helper
+ * ------------------------------------ */
 export function apiGet<T = any>(path: string) {
   return apiJson<T>(path, { method: 'GET' })
 }
@@ -77,17 +89,12 @@ export function apiDelete<T = any>(path: string) {
   return apiJson<T>(path, { method: 'DELETE' })
 }
 
-// ===== Admin API（型別與你後端對齊） =====
-export type AdminUser = { id: string; role: string; name: string }
-
-export type AdminLoginResp = { ok: true; user: AdminUser }
-export type AdminMeResp = {
-  authenticated?: boolean
-  loggedIn?: boolean
-  user: AdminUser | null
-}
-export type ReviewStats = { pending: number; approved: number; rejected: number; cancelled: number }
-export type AdminReviewListResp = { items: any[]; stats: ReviewStats }
+/* ------------------------------------
+ * Admin API（與後端 /api/admin 對齊）
+ * ------------------------------------ */
+export type AdminLoginResp = { ok: true; user: string }
+export type AdminMeResp = { admin: { user: string } | null }
+export type AdminReviewListResp = { items: any[] }
 
 export const adminApi = {
   async login(username: string, password: string) {
@@ -96,31 +103,65 @@ export const adminApi = {
       body: JSON.stringify({ username, password }),
     })
   },
+
   async me() {
     return apiJson<AdminMeResp>('/api/admin/me', { method: 'GET' })
   },
-  async reviewList(params?: { days?: number; venue?: string; showFinished?: boolean; q?: string }) {
+
+  async reviewList(params?: { days?: number; venue?: string; includeEnded?: boolean; showFinished?: boolean; q?: string }) {
     const qs = new URLSearchParams()
     if (params?.days != null) qs.set('days', String(params.days))
     if (params?.venue) qs.set('venue', params.venue)
-    if (params?.showFinished != null) qs.set('showFinished', params.showFinished ? 'true' : 'false')
+    // 前端舊稱 showFinished，後端採用 includeEnded → 自動轉換
+    const includeEnded = params?.includeEnded ?? params?.showFinished ?? false
+    if (includeEnded) qs.set('includeEnded', 'true')
     if (params?.q) qs.set('q', params.q)
     const suffix = qs.toString() ? `?${qs.toString()}` : ''
     return apiJson<AdminReviewListResp>(`/api/admin/review${suffix}`, { method: 'GET' })
   },
+
   async logout() {
     return apiJson<{ ok: true }>('/api/admin/logout', { method: 'POST' })
   },
 }
 
-// =====（可選）條款 API，小工具 =====
-export type TermsStatusResp = { ok: true; enabled: boolean; version: string; url: string | null; accepted: boolean; accepted_at: string | null }
+/* ------------------------------------
+ * Terms API（與 /api/terms 對齊）
+ * ------------------------------------ */
+export type TermsStatusResp = { enabled: boolean; accepted: boolean; updatedAt: string }
+
 export const termsApi = {
-  status() { return apiJson<TermsStatusResp>('/api/terms/status') },
+  status() {
+    return apiJson<TermsStatusResp>('/api/terms/status')
+  },
   accept(email?: string) {
-    return apiJson<{ ok: true; accepted_at: string }>('/api/terms/accept', {
+    // 後端目前回 { ok: true }
+    return apiJson<{ ok: true }>('/api/terms/accept', {
       method: 'POST',
       body: JSON.stringify(email ? { email } : {}),
     })
+  },
+}
+
+/* ------------------------------------
+ * （可選）Bookings API 簡單封裝
+ * ------------------------------------ */
+export const bookingsApi = {
+  create(body: {
+    start: string
+    applicantName: string
+    email: string
+    phone: string
+    venue: '大會堂' | '康樂廳' | '其它教室'
+    category: string
+    note?: string
+  }) {
+    return apiJson<{ id: string; start_ts: string; end_ts: string }>('/api/bookings', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+  },
+  list(days = 60) {
+    return apiJson<{ items: any[] }>(`/api/bookings/list?days=${encodeURIComponent(String(days))}`)
   },
 }
