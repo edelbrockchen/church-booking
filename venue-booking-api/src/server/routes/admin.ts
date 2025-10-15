@@ -4,9 +4,6 @@ import bcrypt from 'bcryptjs'
 import { z } from 'zod'
 import { makePool } from '../db'
 
-// --------------------------------------------------
-// Types & Session typing
-// --------------------------------------------------
 declare module 'express-session' {
   interface SessionData {
     admin?: { user: string }
@@ -14,13 +11,9 @@ declare module 'express-session' {
 }
 
 const router = Router()
-const pool = makePool() // NOTE: do not connect here; connect inside handlers
+const pool = makePool()
 
-// --------------------------------------------------
-// Helpers
-// --------------------------------------------------
 function getUsersFromEnv(): Record<string, string> {
-  // Preferred: ADMIN_USERS_JSON = { "user": "$2b$10$hash..." }
   const adminUsersJson = process.env.ADMIN_USERS_JSON
   if (adminUsersJson) {
     try {
@@ -30,23 +23,15 @@ function getUsersFromEnv(): Record<string, string> {
       console.error('[admin] Failed to parse ADMIN_USERS_JSON:', err)
     }
   }
-  // Legacy: ADMIN_PASSWORD=plain or bcrypt hash for default user "admin"
-  if (process.env.ADMIN_PASSWORD) {
-    return { admin: process.env.ADMIN_PASSWORD }
-  }
+  if (process.env.ADMIN_PASSWORD) return { admin: process.env.ADMIN_PASSWORD }
   return {}
 }
 
-function isBcryptHash(str: string): boolean {
-  return typeof str === 'string' && /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/.test(str)
+function isBcryptHash(s: string) {
+  return typeof s === 'string' && /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/.test(s)
 }
-
-async function verifyPassword(input: string, expected: string): Promise<boolean> {
-  if (isBcryptHash(expected)) {
-    return await bcrypt.compare(input, expected)
-  }
-  // If expected is plain text (legacy), compare directly
-  return input === expected
+async function verifyPassword(input: string, expected: string) {
+  return isBcryptHash(expected) ? bcrypt.compare(input, expected) : input === expected
 }
 
 function requireAdmin(req: Request, res: Response, next: NextFunction) {
@@ -54,19 +39,11 @@ function requireAdmin(req: Request, res: Response, next: NextFunction) {
   return res.status(401).json({ error: 'unauthorized' })
 }
 
-// --------------------------------------------------
-// Auth endpoints
-// --------------------------------------------------
-const LoginBody = z.object({
-  username: z.string().min(1),
-  password: z.string().min(1),
-})
+const LoginBody = z.object({ username: z.string().min(1), password: z.string().min(1) })
 
 router.post('/login', async (req, res) => {
   const parsed = LoginBody.safeParse(req.body)
   if (!parsed.success) return res.status(400).json({ error: 'invalid_body' })
-
-  // Normalise（避免帳號前後空白/大小寫差異造成困擾）
   const username = parsed.data.username.trim()
   const password = parsed.data.password
 
@@ -77,14 +54,20 @@ router.post('/login', async (req, res) => {
   const ok = await verifyPassword(password, expected)
   if (!ok) return res.status(401).json({ error: 'invalid_credentials' })
 
-  // 防 Session Fixation：登入時重新產生 session id
+  // regenerate + save，確保 Set-Cookie 寫成功
   req.session.regenerate((err) => {
     if (err) {
       console.error('[admin] session regenerate failed:', err)
       return res.status(500).json({ error: 'session_error' })
     }
     req.session.admin = { user: username }
-    return res.json({ ok: true, user: username })
+    req.session.save((err2) => {
+      if (err2) {
+        console.error('[admin] session save failed:', err2)
+        return res.status(500).json({ error: 'session_error' })
+      }
+      return res.json({ ok: true, user: username })
+    })
   })
 })
 
@@ -93,22 +76,13 @@ router.get('/me', (req, res) => {
 })
 
 router.post('/logout', (req, res) => {
-  const sidCookieName = (req.session as any)?.cookie?.name || 'connect.sid'
+  const sidName = 'connect.sid'
   req.session?.destroy(() => {})
-  // 嘗試清 Cookie（即使跨網域不一定成功，仍無害）
-  res.clearCookie(sidCookieName, { sameSite: 'none', secure: true })
+  res.clearCookie(sidName, { sameSite: 'none', secure: true, path: '/' })
   res.json({ ok: true })
 })
 
-// --------------------------------------------------
-// Review list
-// --------------------------------------------------
-// Expected front-end params (all optional):
-// days: number (default 60)
-// venue: string
-// includeEnded: 'true' | 'false' (default false)  // alias: showFinished=true
-// q: string (search)
-
+// ---- review list ----
 router.get('/review', requireAdmin, async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'db_unavailable' })
 
@@ -123,25 +97,11 @@ router.get('/review', requireAdmin, async (req, res) => {
     const where: string[] = []
     const params: any[] = []
 
-    // Time window
     params.push(days)
-    where.push(`start_ts >= (now() - ($${params.length}::text || ' days')::interval)`) // now - '<days> days'
-
-    if (!includeEnded) {
-      where.push('end_ts >= now()')
-    }
-
-    if (venue) {
-      params.push(venue)
-      where.push(`venue = $${params.length}`)
-    }
-
-    if (q) {
-      // Search in a few columns
-      params.push(`%${q}%`)
-      const p = `$${params.length}`
-      where.push(`(lower(coalesce(note,'')||' '||coalesce(category,'')||' '||coalesce(venue,'')||' '||coalesce(created_by,''))) like ${p}`)
-    }
+    where.push(`start_ts >= (now() - ($${params.length}::text || ' days')::interval)`)
+    if (!includeEnded) where.push('end_ts >= now()')
+    if (venue) { params.push(venue); where.push(`venue = $${params.length}`) }
+    if (q) { params.push(`%${q}%`); const p = `$${params.length}`; where.push(`(lower(coalesce(note,'')||' '||coalesce(category,'')||' '||coalesce(venue,'')||' '||coalesce(created_by,''))) like ${p}`) }
 
     const sql = `
       SELECT id, start_ts, end_ts, created_at, created_by, status, category, venue, note
@@ -150,7 +110,6 @@ router.get('/review', requireAdmin, async (req, res) => {
       ORDER BY start_ts DESC
       LIMIT 500
     `
-
     const { rows } = await client.query(sql, params)
     res.json({ items: rows })
   } catch (err) {
@@ -161,10 +120,8 @@ router.get('/review', requireAdmin, async (req, res) => {
   }
 })
 
-// Optional CSV export (used by "匯出 CSV")
 router.get('/review.csv', requireAdmin, async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'db_unavailable' })
-
   const rawDays = Number(req.query.days)
   const days = Number.isFinite(rawDays) ? Math.max(1, Math.min(365, rawDays)) : 60
   const venue = typeof req.query.venue === 'string' && req.query.venue.trim() !== '' ? req.query.venue.trim() : null
@@ -177,7 +134,7 @@ router.get('/review.csv', requireAdmin, async (req, res) => {
     const params: any[] = []
 
     params.push(days)
-    where.push(`start_ts >= (now() - ($${params.length}::text || ' days')::interval)`) 
+    where.push(`start_ts >= (now() - ($${params.length}::text || ' days')::interval)`)
     if (!includeEnded) where.push('end_ts >= now()')
     if (venue) { params.push(venue); where.push(`venue = $${params.length}`) }
     if (q) { params.push(`%${q}%`); const p = `$${params.length}`; where.push(`(lower(coalesce(note,'')||' '||coalesce(category,'')||' '||coalesce(venue,'')||' '||coalesce(created_by,''))) like ${p}`) }
@@ -189,7 +146,6 @@ router.get('/review.csv', requireAdmin, async (req, res) => {
       ORDER BY start_ts DESC
       LIMIT 2000
     `
-
     const { rows } = await client.query(sql, params)
     const header = ['id','start_ts','end_ts','created_at','created_by','status','category','venue','note']
     const csv = [header.join(',')]
@@ -207,7 +163,6 @@ router.get('/review.csv', requireAdmin, async (req, res) => {
       ].map((v) => `"${String(v ?? '')}"`).join(',')
       csv.push(line)
     }
-
     res.setHeader('Content-Type', 'text/csv; charset=utf-8')
     res.setHeader('Content-Disposition', 'attachment; filename="review.csv"')
     res.send(csv.join('\n'))

@@ -8,7 +8,10 @@ import session from 'express-session'
 // ------------------------
 const app = express()
 
-// Parse CORS_ORIGIN as comma‑separated list; fallback to true (allow any) for local dev
+// 讓 proxy 後面的 secure cookie 正常運作（如 Render/Heroku）
+app.set('trust proxy', 1)
+
+// Parse CORS_ORIGIN as comma-separated list; fallback to true (allow any) for local dev
 const corsOrigins = (process.env.CORS_ORIGIN ?? '').split(',').map(s => s.trim()).filter(Boolean)
 app.use(cors({
   origin: corsOrigins.length > 0 ? corsOrigins : true,
@@ -20,9 +23,10 @@ app.use(express.urlencoded({ extended: true }))
 app.use(cookieParser())
 
 // ------------------------
-// Session (non‑blocking, Redis optional)
+// Session (non-blocking, Redis optional)
 // ------------------------
 const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-temp-secret-change-me'
+const isProd = process.env.NODE_ENV === 'production'
 
 // Use MemoryStore by default to avoid boot blocking. If you later wire Redis, do it in the routers, not here.
 app.use(session({
@@ -31,14 +35,15 @@ app.use(session({
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    // 代理（不同子網域）或跨網域時，需要 SameSite=None + Secure 才會送 Cookie
+    sameSite: isProd ? 'none' : 'lax',
+    secure: isProd, // 在 https 環境下為 true
     maxAge: 1000 * 60 * 60 * 4, // 4h
   },
 }))
 
 // ------------------------
-// Health endpoints — MUST be fast and DB‑agnostic
+// Health endpoints — MUST be fast and DB-agnostic
 // ------------------------
 app.get('/healthz', (_req: Request, res: Response) => {
   // Keep it ultra simple: return 200 immediately. Do NOT touch DB/Redis here.
@@ -50,8 +55,31 @@ app.get('/api/ping', (_req, res) => {
   res.json({ ok: true, now: new Date().toISOString() })
 })
 
+/* ------------------------
+ * 保險用 Terms 直連路由（避免懶載入失敗導致 404）
+ * 放在其他路由之前
+ * ------------------------ */
+declare module 'express-session' {
+  interface SessionData {
+    termsAccepted?: boolean
+  }
+}
+
+app.get('/api/terms/status', (req, res) => {
+  res.json({
+    enabled: true,
+    accepted: !!req.session?.termsAccepted,
+    updatedAt: new Date().toISOString(),
+  })
+})
+
+app.post('/api/terms/accept', (req, res) => {
+  if (req.session) req.session.termsAccepted = true
+  res.json({ ok: true })
+})
+
 // ------------------------
-// Lazy‑mount routers to avoid top‑level DB/Redis connects blocking boot
+// Lazy-mount routers to avoid top-level DB/Redis connects blocking boot
 // ------------------------
 function lazyMount(pathPrefix: string, loader: () => Promise<any>) {
   let cached: Router | null = null
@@ -76,6 +104,7 @@ function lazyMount(pathPrefix: string, loader: () => Promise<any>) {
 // If these files don’t exist, you can remove or change the lines below.
 lazyMount('/api/admin', () => import('./routes/admin'))
 lazyMount('/api/bookings', () => import('./routes/bookings'))
+lazyMount('/api/terms', () => import('./routes/terms')) // 仍保留正式的 terms router（保險 + 正式都在）
 
 // ------------------------
 // Error handler (keep last)
