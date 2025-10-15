@@ -43,26 +43,23 @@ function ruleCheckTW(start: Date): { ok: boolean; reason?: string } {
   return { ok: true }
 }
 
-/* ---------------- Zod Schema（放寬 & 正規化） ---------------- */
-const VenueInput = z.preprocess(
-  v => typeof v === 'string' ? v.trim() : v,
-  z.union([
-    z.literal('大會堂'),
-    z.literal('康樂廳'),
-    z.literal('其它教室'),
-    z.literal('其他教室'), // 同音異字也接受
-  ])
-).transform(v => (v === '其他教室' ? ('其它教室' as const) : (v as '大會堂'|'康樂廳'|'其它教室')))
+/* ---------------- Zod Schema（用 preprocess 先 trim 再驗證） ---------------- */
+const trim = (v: unknown) => (typeof v === 'string' ? v.trim() : v)
+
+const VenueInput = z
+  .preprocess(trim, z.enum(['大會堂', '康樂廳', '其它教室', '其他教室']))
+  .transform(v => (v === '其他教室' ? ('其它教室' as const) : (v as '大會堂' | '康樂廳' | '其它教室')))
 
 const CreateBody = z.object({
-  start: z.string().min(10), // ISO 字串；伺服器會 new Date 驗證
-  applicantName: z.string().transform(s => s.trim()).min(1),
-  email: z.string().transform(s => s.trim()).email(),
-  phone: z.string().transform(s => s.trim()).min(5),
+  start: z.preprocess(trim, z.string().min(10)),             // ISO 字串
+  applicantName: z.preprocess(trim, z.string().min(1)),
+  email: z.preprocess(trim, z.string().email()),
+  phone: z.preprocess(trim, z.string().min(5)),
   venue: VenueInput,
-  category: z.string().transform(s => s.trim()).min(1),
-  note: z.string().optional().default(''),
+  category: z.preprocess(trim, z.string().min(1)),
+  note: z.preprocess((v) => (typeof v === 'string' ? v : ''), z.string()).optional().default(''),
 })
+type CreateInput = z.infer<typeof CreateBody>
 
 /* ---------------- DB 查詢共用 ---------------- */
 async function listBookings(days: number, status?: BookingStatus) {
@@ -93,11 +90,10 @@ async function listBookings(days: number, status?: BookingStatus) {
 router.post('/', async (req, res) => {
   const parsed = CreateBody.safeParse(req.body)
   if (!parsed.success) {
-    // 讓前端比較好定位錯誤
     return res.status(400).json({ error: 'invalid_body', details: parsed.error.flatten() })
   }
 
-  const { start, applicantName, email, phone, venue, category, note } = parsed.data
+  const { start, applicantName, email, phone, venue, category, note } = parsed.data as CreateInput
   const startDate = new Date(start)
   if (Number.isNaN(startDate.getTime())) return res.status(400).json({ error: 'invalid_start' })
 
@@ -136,7 +132,7 @@ router.post('/', async (req, res) => {
       endDate.toISOString(),
       applicantName,
       category,
-      venue, // 已正規化
+      venue, // 已正規化為「其它教室」或其餘兩值
       `${note ?? ''}\nEmail: ${email}\nPhone: ${phone}`.trim(),
     ])
 
