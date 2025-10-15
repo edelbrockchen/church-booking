@@ -182,8 +182,12 @@ const IdParam = z.object({ id: z.string().uuid().or(z.string().min(8)) })
 
 type BookingStatus = 'pending' | 'approved' | 'rejected' | 'cancelled'
 
-async function setStatus(id: string, newStatus: BookingStatus, actor: string, reason?: string) {
-  if (!pool) return { error: 'db_unavailable', status: 503 as const }
+// 明確定義 setStatus 回傳型別，避免 out.status 被視為可能 undefined
+type SetStatusOk = { ok: true; row: any }
+type SetStatusErr = { ok: false; error: string; status: number; current?: BookingStatus }
+
+async function setStatus(id: string, newStatus: BookingStatus, actor: string, reason?: string): Promise<SetStatusOk | SetStatusErr> {
+  if (!pool) return { ok: false, error: 'db_unavailable', status: 503 }
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
@@ -194,7 +198,7 @@ async function setStatus(id: string, newStatus: BookingStatus, actor: string, re
     )
     if (curRows.length === 0) {
       await client.query('ROLLBACK')
-      return { error: 'not_found', status: 404 as const }
+      return { ok: false, error: 'not_found', status: 404 }
     }
     const cur: BookingStatus = curRows[0].status
 
@@ -205,7 +209,7 @@ async function setStatus(id: string, newStatus: BookingStatus, actor: string, re
     ])
     if (!allowed.has(`${cur}:${newStatus}`) && cur !== newStatus) {
       await client.query('ROLLBACK')
-      return { error: 'invalid_transition', status: 409 as const, current: cur }
+      return { ok: false, error: 'invalid_transition', status: 409, current: cur }
     }
 
     const notePatch = reason ? `\n[${newStatus.toUpperCase()}] ${actor}: ${reason}` : ''
@@ -221,11 +225,11 @@ async function setStatus(id: string, newStatus: BookingStatus, actor: string, re
     )
 
     await client.query('COMMIT')
-    return { ok: true as const, row: rows[0] }
+    return { ok: true, row: rows[0] }
   } catch (e) {
     await client.query('ROLLBACK')
     console.error('[admin] setStatus error:', e)
-    return { error: 'internal_error', status: 500 as const }
+    return { ok: false, error: 'internal_error', status: 500 }
   } finally {
     client.release()
   }
@@ -240,7 +244,9 @@ function actionRoute(newStatus: BookingStatus) {
 
     const actor = req.session?.admin?.user ?? 'admin'
     const out = await setStatus(pid.data.id, newStatus, actor, body.data?.reason ?? undefined)
-    if ('error' in out) return res.status(out.status).json({ error: out.error, current: (out as any).current })
+    if (out.ok !== true) {
+      return res.status(out.status).json({ error: out.error, current: out.current })
+    }
     return res.json({ ok: true, booking: out.row })
   }
 }
