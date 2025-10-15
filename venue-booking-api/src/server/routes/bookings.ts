@@ -43,7 +43,7 @@ function ruleCheckTW(start: Date): { ok: boolean; reason?: string } {
   return { ok: true }
 }
 
-/* ---------------- Zod Schema（用 preprocess 先 trim 再驗證） ---------------- */
+/* ---------------- Zod Schema（放寬 & 正規化） ---------------- */
 const trim = (v: unknown) => (typeof v === 'string' ? v.trim() : v)
 
 const VenueInput = z
@@ -51,10 +51,10 @@ const VenueInput = z
   .transform(v => (v === '其他教室' ? ('其它教室' as const) : (v as '大會堂' | '康樂廳' | '其它教室')))
 
 const CreateBody = z.object({
-  start: z.preprocess(trim, z.string().min(10)),             // ISO 字串
-  applicantName: z.preprocess(trim, z.string().min(1)),
-  email: z.preprocess(trim, z.string().email()),
-  phone: z.preprocess(trim, z.string().min(5)),
+  start: z.preprocess(trim, z.string().min(10)),   // ISO 字串
+  applicantName: z.preprocess(trim, z.string().optional()), // ← 可選
+  email: z.preprocess(trim, z.string().optional()),         // ← 可選；若非空再驗證
+  phone: z.preprocess(trim, z.string().optional()),         // ← 可選
   venue: VenueInput,
   category: z.preprocess(trim, z.string().min(1)),
   note: z.preprocess((v) => (typeof v === 'string' ? v : ''), z.string()).optional().default(''),
@@ -88,13 +88,28 @@ async function listBookings(days: number, status?: BookingStatus) {
 
 /* ---------------- 建立申請單 ---------------- */
 router.post('/', async (req, res) => {
-  const parsed = CreateBody.safeParse(req.body)
+  // 允許前端舊鍵名 → 映射到新欄位
+  const body: any = { ...(req.body ?? {}) }
+  if (!body.applicantName) body.applicantName = body.name ?? body.applicant ?? body.applicant_name
+  if (!body.email) body.email = body.mail ?? body.emailAddress ?? body.contactEmail
+  if (!body.phone) body.phone = body.tel ?? body.mobile ?? body.phoneNumber
+
+  const parsed = CreateBody.safeParse(body)
   if (!parsed.success) {
     return res.status(400).json({ error: 'invalid_body', details: parsed.error.flatten() })
   }
 
-  const { start, applicantName, email, phone, venue, category, note } = parsed.data as CreateInput
-  const startDate = new Date(start)
+  const data = parsed.data as CreateInput
+
+  // 若有填 email/phone 再做格式與長度檢查（不填也可過）
+  if (data.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) {
+    return res.status(400).json({ error: 'invalid_body', details: { fieldErrors: { email: ['Invalid email'] }, formErrors: [] } })
+  }
+  if (data.phone && data.phone.length < 5) {
+    return res.status(400).json({ error: 'invalid_body', details: { fieldErrors: { phone: ['Too short'] }, formErrors: [] } })
+  }
+
+  const startDate = new Date(data.start)
   if (Number.isNaN(startDate.getTime())) return res.status(400).json({ error: 'invalid_start' })
 
   const rule = ruleCheckTW(startDate)
@@ -115,7 +130,7 @@ router.post('/', async (req, res) => {
         AND tstzrange(start_ts, end_ts, '[)') && tstzrange($2::timestamptz, $3::timestamptz, '[)')
       LIMIT 1
     `
-    const ov = await client.query(overlapSQL, [venue, startDate.toISOString(), endDate.toISOString()])
+    const ov = await client.query(overlapSQL, [data.venue, startDate.toISOString(), endDate.toISOString()])
     if ((ov.rowCount ?? 0) > 0) {
       await client.query('ROLLBACK')
       return res.status(409).json({ error: 'overlap' })
@@ -126,14 +141,20 @@ router.post('/', async (req, res) => {
       INSERT INTO bookings (id, start_ts, end_ts, created_by, status, category, venue, note)
       VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7)
     `
+    const displayName = data.applicantName && data.applicantName !== '' ? data.applicantName : '（未填）'
+    const extra =
+      `${data.note ?? ''}` +
+      `${data.email ? `\nEmail: ${data.email}` : ''}` +
+      `${data.phone ? `\nPhone: ${data.phone}` : ''}`
+
     await client.query(insertSQL, [
       id,
       startDate.toISOString(),
       endDate.toISOString(),
-      applicantName,
-      category,
-      venue, // 已正規化為「其它教室」或其餘兩值
-      `${note ?? ''}\nEmail: ${email}\nPhone: ${phone}`.trim(),
+      displayName,   // created_by
+      data.category,
+      data.venue,    // 已正規化
+      extra.trim(),
     ])
 
     await client.query('COMMIT')
