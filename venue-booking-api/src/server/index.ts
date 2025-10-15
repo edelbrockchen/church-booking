@@ -104,7 +104,7 @@ function lazyMount(pathPrefix: string, loader: () => Promise<any>) {
 // If these files don’t exist, you can remove or change the lines below.
 lazyMount('/api/admin', () => import('./routes/admin'))
 lazyMount('/api/bookings', () => import('./routes/bookings'))
-lazyMount('/api/terms', () => import('./routes/terms')) // 仍保留正式的 terms router（保險 + 正式都在）
+lazyMount('/api/terms', () => import('./routes/terms.route')) // 仍保留正式的 terms router（保險 + 正式都在）
 
 // ------------------------
 // Error handler (keep last)
