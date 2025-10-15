@@ -11,8 +11,9 @@ declare module 'express-session' {
 }
 
 const router = Router()
-const pool = makePool()
+const pool = makePool() // connect 於 handler 內進行
 
+/* ---------------- Helpers ---------------- */
 function getUsersFromEnv(): Record<string, string> {
   const adminUsersJson = process.env.ADMIN_USERS_JSON
   if (adminUsersJson) {
@@ -26,19 +27,18 @@ function getUsersFromEnv(): Record<string, string> {
   if (process.env.ADMIN_PASSWORD) return { admin: process.env.ADMIN_PASSWORD }
   return {}
 }
-
 function isBcryptHash(s: string) {
   return typeof s === 'string' && /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/.test(s)
 }
 async function verifyPassword(input: string, expected: string) {
   return isBcryptHash(expected) ? bcrypt.compare(input, expected) : input === expected
 }
-
 function requireAdmin(req: Request, res: Response, next: NextFunction) {
   if (req.session?.admin) return next()
   return res.status(401).json({ error: 'unauthorized' })
 }
 
+/* ---------------- Auth ---------------- */
 const LoginBody = z.object({ username: z.string().min(1), password: z.string().min(1) })
 
 router.post('/login', async (req, res) => {
@@ -54,7 +54,6 @@ router.post('/login', async (req, res) => {
   const ok = await verifyPassword(password, expected)
   if (!ok) return res.status(401).json({ error: 'invalid_credentials' })
 
-  // regenerate + save，確保 Set-Cookie 寫成功
   req.session.regenerate((err) => {
     if (err) {
       console.error('[admin] session regenerate failed:', err)
@@ -82,7 +81,8 @@ router.post('/logout', (req, res) => {
   res.json({ ok: true })
 })
 
-// ---- review list ----
+/* ---------------- Review list ---------------- */
+// /api/admin/review?days=60&venue=...&includeEnded=true&q=...
 router.get('/review', requireAdmin, async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'db_unavailable' })
 
@@ -173,5 +173,80 @@ router.get('/review.csv', requireAdmin, async (req, res) => {
     client.release()
   }
 })
+
+/* ---------------- Actions: approve / reject / cancel ---------------- */
+// 前端呼叫：POST /api/admin/bookings/:id/approve|reject|cancel
+// body: { reason?: string }
+const ActionBody = z.object({ reason: z.string().max(500).optional().nullable() }).optional()
+const IdParam = z.object({ id: z.string().uuid().or(z.string().min(8)) })
+
+type BookingStatus = 'pending' | 'approved' | 'rejected' | 'cancelled'
+
+async function setStatus(id: string, newStatus: BookingStatus, actor: string, reason?: string) {
+  if (!pool) return { error: 'db_unavailable', status: 503 as const }
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+
+    const { rows: curRows } = await client.query(
+      'SELECT id, status FROM bookings WHERE id = $1 LIMIT 1',
+      [id],
+    )
+    if (curRows.length === 0) {
+      await client.query('ROLLBACK')
+      return { error: 'not_found', status: 404 as const }
+    }
+    const cur: BookingStatus = curRows[0].status
+
+    // 預設允許：pending -> approved|rejected|cancelled, approved -> cancelled, rejected -> approved
+    const allowed = new Set<string>([
+      'pending:approved', 'pending:rejected', 'pending:cancelled',
+      'approved:cancelled', 'rejected:approved',
+    ])
+    if (!allowed.has(`${cur}:${newStatus}`) && cur !== newStatus) {
+      await client.query('ROLLBACK')
+      return { error: 'invalid_transition', status: 409 as const, current: cur }
+    }
+
+    const notePatch = reason ? `\n[${newStatus.toUpperCase()}] ${actor}: ${reason}` : ''
+    const { rows } = await client.query(
+      `
+      UPDATE bookings
+      SET status = $2,
+          note   = coalesce(note,'') || $3
+      WHERE id = $1
+      RETURNING id, status, note
+      `,
+      [id, newStatus, notePatch],
+    )
+
+    await client.query('COMMIT')
+    return { ok: true as const, row: rows[0] }
+  } catch (e) {
+    await client.query('ROLLBACK')
+    console.error('[admin] setStatus error:', e)
+    return { error: 'internal_error', status: 500 as const }
+  } finally {
+    client.release()
+  }
+}
+
+function actionRoute(newStatus: BookingStatus) {
+  return async (req: Request, res: Response) => {
+    const pid = IdParam.safeParse(req.params)
+    const body = ActionBody.safeParse(req.body)
+    if (!pid.success) return res.status(400).json({ error: 'invalid_id' })
+    if (!body.success) return res.status(400).json({ error: 'invalid_body' })
+
+    const actor = req.session?.admin?.user ?? 'admin'
+    const out = await setStatus(pid.data.id, newStatus, actor, body.data?.reason ?? undefined)
+    if ('error' in out) return res.status(out.status).json({ error: out.error, current: (out as any).current })
+    return res.json({ ok: true, booking: out.row })
+  }
+}
+
+router.post('/bookings/:id/approve', requireAdmin, actionRoute('approved'))
+router.post('/bookings/:id/reject',  requireAdmin, actionRoute('rejected'))
+router.post('/bookings/:id/cancel',  requireAdmin, actionRoute('cancelled'))
 
 export default router
