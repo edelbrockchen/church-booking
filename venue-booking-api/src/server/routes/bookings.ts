@@ -9,13 +9,10 @@ const pool = makePool()
 
 type BookingStatus = 'pending' | 'approved' | 'rejected' | 'cancelled'
 
-/* ---------------------------------------
- * Helpers: 台北時區規則檢查（無外部套件）
- * --------------------------------------- */
+/* ---------------- 台北時區規則（固定 3 小時） ---------------- */
 function getTWParts(d: Date) {
   const fmt = new Intl.DateTimeFormat('zh-TW', {
-    timeZone: 'Asia/Taipei',
-    hour12: false,
+    timeZone: 'Asia/Taipei', hour12: false,
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', weekday: 'short',
   })
@@ -24,7 +21,6 @@ function getTWParts(d: Date) {
   parts.forEach((p) => { if (p.type !== 'literal') byType[p.type] = p.value })
   const hour = Number(byType.hour)
   const minute = Number(byType.minute)
-  // weekday: 週一..週日（短字），我們轉成 0..6（0=Sun）
   const wkStr = byType.weekday
   const wk = wkStr.includes('日') ? 0
     : wkStr.includes('一') ? 1
@@ -34,14 +30,10 @@ function getTWParts(d: Date) {
     : wkStr.includes('五') ? 5 : 6
   return { hour, minute, wk }
 }
-
 function ruleCheckTW(start: Date): { ok: boolean; reason?: string } {
   const { hour, minute, wk } = getTWParts(start)
-  // 週日禁用
   if (wk === 0) return { ok: false, reason: '週日不開放借用' }
-  // 最早 07:00
   if (hour < 7) return { ok: false, reason: '最早可申請 07:00' }
-  // 最晚結束時間：週一/週三 18:00，其它日 21:30（固定 3 小時）
   const endHour = hour + 3
   const endMinute = minute
   const limit = (wk === 1 || wk === 3) ? { h: 18, m: 0 } : { h: 21, m: 30 }
@@ -51,22 +43,28 @@ function ruleCheckTW(start: Date): { ok: boolean; reason?: string } {
   return { ok: true }
 }
 
-/* ---------------------------------------
- * Schema
- * --------------------------------------- */
+/* ---------------- Zod Schema（放寬 & 正規化） ---------------- */
+const VenueInput = z.preprocess(
+  v => typeof v === 'string' ? v.trim() : v,
+  z.union([
+    z.literal('大會堂'),
+    z.literal('康樂廳'),
+    z.literal('其它教室'),
+    z.literal('其他教室'), // 同音異字也接受
+  ])
+).transform(v => (v === '其他教室' ? ('其它教室' as const) : (v as '大會堂'|'康樂廳'|'其它教室')))
+
 const CreateBody = z.object({
-  start: z.string().min(10), // ISO 字串；伺服器轉 Date 檢查
-  applicantName: z.string().min(1),
-  email: z.string().email(),
-  phone: z.string().min(5),
-  venue: z.enum(['大會堂','康樂廳','其它教室']),
-  category: z.string().min(1),
+  start: z.string().min(10), // ISO 字串；伺服器會 new Date 驗證
+  applicantName: z.string().transform(s => s.trim()).min(1),
+  email: z.string().transform(s => s.trim()).email(),
+  phone: z.string().transform(s => s.trim()).min(5),
+  venue: VenueInput,
+  category: z.string().transform(s => s.trim()).min(1),
   note: z.string().optional().default(''),
 })
 
-/* ---------------------------------------
- * DB helpers
- * --------------------------------------- */
+/* ---------------- DB 查詢共用 ---------------- */
 async function listBookings(days: number, status?: BookingStatus) {
   const p = pool
   if (!p) throw Object.assign(new Error('db_unavailable'), { status: 503 })
@@ -74,17 +72,9 @@ async function listBookings(days: number, status?: BookingStatus) {
   try {
     const where: string[] = []
     const params: any[] = []
-
-    // 時間窗：近 N 天
     params.push(days)
-    where.push(`start_ts >= (now() - ($${params.length}::text || ' days')::interval)`) 
-
-    // 狀態過濾
-    if (status && status !== 'pending') {
-      params.push(status)
-      where.push(`status = $${params.length}`)
-    }
-
+    where.push(`start_ts >= (now() - ($${params.length}::text || ' days')::interval)`)
+    if (status && status !== 'pending') { params.push(status); where.push(`status = $${params.length}`) }
     const sql = `
       SELECT id, start_ts, end_ts, status, category, venue, note
       FROM bookings
@@ -99,19 +89,18 @@ async function listBookings(days: number, status?: BookingStatus) {
   }
 }
 
-/* ---------------------------------------
- * POST /api/bookings  建立申請單
- * 僅接受 start；伺服器強制 end = start + 3h
- * --------------------------------------- */
+/* ---------------- 建立申請單 ---------------- */
 router.post('/', async (req, res) => {
   const parsed = CreateBody.safeParse(req.body)
-  if (!parsed.success) return res.status(400).json({ error: 'invalid_body' })
+  if (!parsed.success) {
+    // 讓前端比較好定位錯誤
+    return res.status(400).json({ error: 'invalid_body', details: parsed.error.flatten() })
+  }
 
   const { start, applicantName, email, phone, venue, category, note } = parsed.data
   const startDate = new Date(start)
   if (Number.isNaN(startDate.getTime())) return res.status(400).json({ error: 'invalid_start' })
 
-  // 規則檢查（台北時區）
   const rule = ruleCheckTW(startDate)
   if (!rule.ok) return res.status(400).json({ error: 'rule_violation', reason: rule.reason })
 
@@ -124,7 +113,6 @@ router.post('/', async (req, res) => {
   try {
     await client.query('BEGIN')
 
-    // 重疊檢查：同一場地，不得與任一單的 [start,end) 區間重疊
     const overlapSQL = `
       SELECT 1 FROM bookings
       WHERE venue = $1
@@ -146,15 +134,15 @@ router.post('/', async (req, res) => {
       id,
       startDate.toISOString(),
       endDate.toISOString(),
-      applicantName, // created_by 放申請者姓名
+      applicantName,
       category,
-      venue,
+      venue, // 已正規化
       `${note ?? ''}\nEmail: ${email}\nPhone: ${phone}`.trim(),
     ])
 
     await client.query('COMMIT')
     res.status(201).json({ id, start_ts: startDate.toISOString(), end_ts: endDate.toISOString() })
-  } catch (err: any) {
+  } catch (err) {
     await client.query('ROLLBACK')
     console.error('[bookings] create error:', err)
     res.status(500).json({ error: 'internal_error' })
@@ -163,35 +151,30 @@ router.post('/', async (req, res) => {
   }
 })
 
-/* ---------------------------------------
- * GET /api/bookings/approved  （為相容前端舊路由）
- * --------------------------------------- */
+/* ---------------- 舊相容：只取核准 ---------------- */
 router.get('/approved', async (req, res) => {
   try {
     const days = Math.max(1, Math.min(180, Number(req.query.days ?? 60)))
     const rows = await listBookings(days, 'approved')
     res.json({ items: rows })
   } catch (err: any) {
-    const status = typeof err?.status === 'number' ? err.status : 500
-    res.status(status).json({ error: 'internal_error' })
+    res.status(typeof err?.status === 'number' ? err.status : 500).json({ error: 'internal_error' })
   }
 })
 
-/* ---------------------------------------
- * GET /api/bookings/list?days=60&status=approved
- * --------------------------------------- */
+/* ---------------- 清單（可過濾狀態） ---------------- */
 router.get('/list', async (req, res) => {
   try {
     const rawDays = Number(req.query.days)
     const days = Number.isFinite(rawDays) ? Math.max(1, Math.min(180, rawDays)) : 60
     const s = String(req.query.status || '').trim().toLowerCase() as BookingStatus | ''
-    const status: BookingStatus | undefined = (s === 'approved' || s === 'rejected' || s === 'cancelled' || s === 'pending') ? s : undefined
+    const status: BookingStatus | undefined =
+      (s === 'approved' || s === 'rejected' || s === 'cancelled' || s === 'pending') ? s : undefined
 
     const rows = await listBookings(days, status)
     res.json({ items: rows })
   } catch (err: any) {
-    const status = typeof err?.status === 'number' ? err.status : 500
-    res.status(status).json({ error: 'internal_error' })
+    res.status(typeof err?.status === 'number' ? err.status : 500).json({ error: 'internal_error' })
   }
 })
 
