@@ -10,7 +10,7 @@ declare module 'express-session' {
 
 const router = Router()
 
-// 前端會輪詢這支；存在即可，請保持快速、不要碰 DB
+// 前端會輪詢這支；保持快速、不要碰 DB
 router.get('/status', (req, res) => {
   res.json({ enabled: true, accepted: !!req.session?.termsAccepted, updatedAt: new Date().toISOString() })
 })
