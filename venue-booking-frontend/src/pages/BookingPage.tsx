@@ -1,9 +1,9 @@
 // venue-booking-frontend/src/pages/BookingPage.tsx
-import React, { useMemo, useState } from 'react'
+import React, { useMemo, useState, useEffect } from 'react'
 import SubmitWithTermsGate from '../web/components/SubmitWithTermsGate'
 import { apiFetch } from '../web/lib/api'
+import RepeatTwoWeeksFlexiblePicker from '../web/components/RepeatTwoWeeksFlexiblePicker'
 
-// 分類（空字串＝未分類）
 type Category = '' | '教會聚會' | '社團活動' | '研習' | '其他'
 type Venue = '大會堂' | '康樂廳' | '其它教室'
 type Mode = 'single' | 'repeat'
@@ -20,11 +20,6 @@ function fmtLocal(d?: Date | null) {
   return `${y}-${m}-${dd}T${hh}:${mm}`
 }
 function parseLocal(v: string) { const d = new Date(v); return isNaN(d.getTime()) ? null : d }
-function parseTimeToDate(baseDate: Date, hhmm: string) {
-  const [hh, mm] = hhmm.split(':').map(Number)
-  const d = new Date(baseDate); d.setHours(hh ?? 0, mm ?? 0, 0, 0)
-  return d
-}
 
 /** --- 台北時間規則（透過 ISO +08:00 建立對齊的時間點） --- */
 function tpeDateKey(d: Date) {
@@ -83,7 +78,7 @@ export default function BookingPage() {
 
   // 其他設定
   const [category, setCategory] = useState<Category>('') // 空字串＝未分類
-  const [reason, setReason] = useState('')               // 申請原因（改為必填）
+  const [reason, setReason] = useState('')               // 申請原因（必填）
 
   /* ---------------- 單日模式 ---------------- */
   const [startStr, setStartStr] = useState(fmtLocal(now))
@@ -92,7 +87,7 @@ export default function BookingPage() {
   const singleAdj = adjustToWindowTPE(start)
   const dayCap = latestCapTPE(start)
   const earliest = earliestOfDayTPE(start)
-  const end = singleAdj && (singleAdj as any).end ? (singleAdj as any).end as Date : addHours(start, 3)
+  const end = (singleAdj as any)?.end ? (singleAdj as any).end as Date : addHours(start, 3)
 
   const tpeHhmm = (d: Date) =>
     new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false }).format(d)
@@ -100,37 +95,32 @@ export default function BookingPage() {
   const singleEffectiveTip = `實際送出時段：${start.toLocaleString()} → ${end.toLocaleString()}${(singleAdj as any)?.cut || (singleAdj as any)?.adjusted ? '（已調整/裁切）' : ''}`
   const startMinLocal = fmtLocal(earliest)
 
-  /* ---------------- 重複模式 ---------------- */
-  const [rangeStart, setRangeStart] = useState(fmtDate(now))
-  const [rangeEnd, setRangeEnd] = useState(fmtDate(addHours(now, 24 * 13))) // 最長 2 週
-  const [repeatTime, setRepeatTime] = useState('07:00')
-  const [repeatWds, setRepeatWds] = useState<{[k in 1|2|3|4|5|6]: boolean}>({1:true,2:true,3:true,4:true,5:true,6:false})
+  /* ---------------- 重複模式（兩週可各自選星期） ---------------- */
+  // 以「第一筆開始時間」為基準（兩週會以該週為第 1 週）
+  const [firstStartStr, setFirstStartStr] = useState(fmtLocal(now))
+  const firstStartISO = useMemo(() => {
+    const d = parseLocal(firstStartStr)
+    return (d ?? now).toISOString()
+  }, [firstStartStr, now])
 
+  const [startsFromPicker, setStartsFromPicker] = useState<string[]>([])
+  // 由 starts 預覽實際送出時段與狀態
   type PreviewItem = { date: Date; start?: Date; end?: Date; status: 'ok'|'cut'|'skip_sun'|'invalid' }
   const repeatPreview: PreviewItem[] = useMemo(() => {
-    const rs = new Date(rangeStart + 'T00:00:00')
-    const re = new Date(rangeEnd + 'T23:59:59')
     const items: PreviewItem[] = []
-    const MAX_DAYS = 31
-    let cur = new Date(rs), i = 0
-    while (cur <= re && i < MAX_DAYS) {
-      const s = parseTimeToDate(cur, repeatTime)
-      const dow = tpeDow(s)
-      if (dow === 0 || !repeatWds[dow as 1|2|3|4|5|6]) {
-        items.push({ date: new Date(cur), status: 'skip_sun' })
+    for (const iso of startsFromPicker) {
+      const s = new Date(iso)
+      const adj = adjustToWindowTPE(s)
+      if ((adj as any).status === 'invalid') {
+        items.push({ date: s, status: 'invalid' })
+      } else if ((adj as any).status === 'sunday') {
+        items.push({ date: s, status: 'skip_sun' })
       } else {
-        const adj = adjustToWindowTPE(s)
-        if ((adj as any).status === 'invalid' || (adj as any).status === 'sunday') {
-          items.push({ date: new Date(cur), status: 'invalid' })
-        } else {
-          items.push({ date: new Date(cur), start: (adj as any).start, end: (adj as any).end, status: (adj as any).cut ? 'cut' : 'ok' })
-        }
+        items.push({ date: s, start: (adj as any).start, end: (adj as any).end, status: (adj as any).cut ? 'cut' : 'ok' })
       }
-      const next = new Date(cur); next.setDate(cur.getDate() + 1); next.setHours(0,0,0,0)
-      cur = next; i++
     }
-    return items
-  }, [rangeStart, rangeEnd, repeatTime, repeatWds])
+    return items.sort((a, b) => a.date.getTime() - b.date.getTime())
+  }, [startsFromPicker])
 
   /* ---------------- 驗證 ---------------- */
   function validateCommon(): string | null {
@@ -148,12 +138,9 @@ export default function BookingPage() {
     return null
   }
   function validateRepeat(): string | null {
-    const rs = new Date(rangeStart + 'T00:00:00')
-    const re = new Date(rangeEnd   + 'T23:59:59')
-    const days = Math.floor((re.getTime() - rs.getTime())/86400000) + 1
-    if (days > 14) return '重複日期最長 2 週'
-    const anyWd = Object.values(repeatWds).some(Boolean)
-    if (!anyWd) return '請至少選擇一個平日或週六'
+    if (!firstStartStr) return '請選擇第一筆開始日期時間'
+    if (!startsFromPicker.length) return '請在下方勾選至少一天'
+    // 兩週為上限（Flexible 元件本身就是 2 週）；不額外檢查
     return null
   }
 
@@ -257,6 +244,11 @@ export default function BookingPage() {
   }
 
   /* ---------------- UI ---------------- */
+  // 單日模式：最小可選時間（當日台北最早）
+  const startMinLocal = fmtLocal(earliestOfDayTPE(start))
+  // 重複模式：預設「第一筆開始」的最小時間（以當天台北 07:00）
+  const firstStartMinLocal = useMemo(() => fmtLocal(earliestOfDayTPE(new Date(firstStartISO))), [firstStartISO])
+
   return (
     <div className="max-w-4xl mx-auto p-4 space-y-6">
       <h2 className="text-2xl font-bold">申請借用</h2>
@@ -386,26 +378,33 @@ export default function BookingPage() {
           </>
         ) : (
           <>
-            <div className="grid md:grid-cols-3 gap-4">
+            {/* 兩週彈性選擇：以「第一筆開始時間」為基準 */}
+            <div className="grid md:grid-cols-2 gap-4">
               <label className="flex flex-col gap-1">
-                <span className="text-sm text-slate-600">開始日期（最長 2 週）</span>
-                <input type="date" value={rangeStart} onChange={e=>setRangeStart(e.target.value)} className="rounded-lg border px-3 py-2" />
-              </label>
-              <label className="flex flex-col gap-1">
-                <span className="text-sm text-slate-600">結束日期</span>
-                <input type="date" value={rangeEnd} onChange={e=>setRangeEnd(e.target.value)} className="rounded-lg border px-3 py-2" />
-              </label>
-              <label className="flex flex-col gap-1">
-                <span className="text-sm text-slate-600">每天開始時間</span>
-                <input type="time" value={repeatTime} onChange={e=>setRepeatTime(e.target.value)} className="rounded-lg border px-3 py-2" />
+                <span className="text-sm text-slate-600">第一筆開始時間（作為兩週的基準；以台北時間計）</span>
+                <input
+                  type="datetime-local"
+                  value={firstStartStr}
+                  onChange={e => setFirstStartStr(e.target.value)}
+                  className="rounded-lg border px-3 py-2"
+                  min={firstStartMinLocal}
+                />
+                <div className="text-xs text-slate-500">每日最早 07:00；週一/週三最晚 18:00；其餘至 21:30；週日不可申請。</div>
               </label>
             </div>
-            {/* 將冗長備註移出欄位，避免擠壓版面 */}
-            <div className="text-xs text-slate-500">每天開始時間以台北時間計，最早 07:00。</div>
 
-            {/* 重複日期預覽（以台北時間判斷有效性/裁切） */}
+            <div className="border rounded p-3">
+              <RepeatTwoWeeksFlexiblePicker
+                firstStartISO={firstStartISO}
+                initialEnabled={true}
+                initialPerWeek={true}
+                onStartsPreview={setStartsFromPicker}
+              />
+            </div>
+
+            {/* 預覽 */}
             <div className="space-y-2">
-              <div className="text-sm text-slate-600">預覽（超出上限自動裁切；台北週日與未勾選星期將跳過）</div>
+              <div className="text-sm text-slate-600">預覽（超出上限自動裁切；週日將跳過）</div>
               <div className="rounded-lg border divide-y">
                 {repeatPreview.map((it, idx) => {
                   const ds = new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', year:'numeric', month:'2-digit', day:'2-digit', weekday:'short' }).format(it.date)
@@ -423,11 +422,10 @@ export default function BookingPage() {
                       <div className="text-right text-slate-700">
                         {(it.start && it.end) ? (
                           <span>
-                            {
-                              new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', hour:'2-digit', minute:'2-digit', hour12:false }).format(it.start)
-                            } → {
-                              new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', hour:'2-digit', minute:'2-digit', hour12:false }).format(it.end)
-                            }（台北）
+                            {new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', hour:'2-digit', minute:'2-digit', hour12:false }).format(it.start)}
+                            {' '}→{' '}
+                            {new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', hour:'2-digit', minute:'2-digit', hour12:false }).format(it.end)}
+                            （台北）
                           </span>
                         ) : (
                           <span className="text-slate-500">不送出</span>

@@ -1,118 +1,60 @@
-import { useEffect, useMemo, useState } from 'react'
-import { buildTwoWeekStarts } from '../lib/repeat'
+// src/web/lib/repeat.ts
 
-const DOW_LABELS = ['日','一','二','三','四','五','六']
-
-type Props = {
-  /** 使用者選的第一筆開始時間（ISO 字串，例如 new Date(...).toISOString()） */
-  firstStartISO: string
-  /** 預設是否啟用兩週模式；預設 false */
-  initialEnabled?: boolean
-  /** 預覽回呼：會回傳計算出的開始時間陣列（至少 1 筆） */
-  onStartsPreview?: (starts: string[]) => void
-  /** 可選：外層容器 className */
-  className?: string
+/**
+ * 依「第一個開始時間」與勾選的星期，產生兩週內所有開始時間（保留原本的時分）
+ * - 星期以瀏覽器本地時間計算（和 <input type="datetime-local"> 一致）
+ * - 回傳為 ISO 字串陣列（交給後端用伺服器時區處理）
+ *
+ * @param firstStartISO  例如 new Date(value).toISOString()
+ * @param selectedDOW    勾選的星期，0(日) ~ 6(六)
+ * @returns              ISO 字串陣列（已去重、排序）
+ */
+export function buildTwoWeekStarts(firstStartISO: string, selectedDOW: number[]): string[] {
+  // 兩週同一組星期 → 直接委派給多週版本
+  return buildMultiWeekStarts(firstStartISO, [selectedDOW, selectedDOW])
 }
 
 /**
- * 「連續 2 週（自選星期）」挑選器
- * - 預設選中 firstStartISO 所在的星期
- * - 啟用後依勾選的星期產生兩週內的多個開始時間（保留原本的時分）
- * - 不啟用時回傳只有 firstStartISO 一筆
+ * 「每週可選不同星期」的多週版本。
+ * - weeksDays[0] 是第 1 週要的星期陣列、weeksDays[1] 是第 2 週…以此類推
+ * - 不限制週數；最少會跑 2 週（若陣列長度 < 2 也會補到 2 週）
+ * - 若某週的陣列為空，代表那週不建立任何日期
+ *
+ * @param firstStartISO  第一筆開始時間（ISO）
+ * @param weeksDays      例如：[[1,3,5], [2,4]] 代表第 1 週選一三五，第 2 週選二四
+ * @returns              ISO 字串陣列（已去重、排序）
  */
-export function RepeatTwoWeeksPicker({
-  firstStartISO,
-  initialEnabled = false,
-  onStartsPreview,
-  className,
-}: Props) {
-  // 若 firstStartISO 無效，就用現在時間避免 NaN
-  const firstDate = useMemo(() => {
-    const d = new Date(firstStartISO)
-    return isNaN(d.getTime()) ? new Date() : d
-  }, [firstStartISO])
+export function buildMultiWeekStarts(firstStartISO: string, weeksDays: number[][]): string[] {
+  const first = new Date(firstStartISO)
+  const base = isNaN(first.getTime()) ? new Date() : first
 
-  const firstDow = firstDate.getDay()
-  const [enableRepeat, setEnableRepeat] = useState<boolean>(initialEnabled)
-  const [selected, setSelected] = useState<Set<number>>(
-    () => new Set<number>([firstDow]) // 預設勾選「首次日期的星期」
-  )
+  // 保留使用者選的 時:分:秒:毫秒（避免邊界誤差）
+  const h = base.getHours()
+  const m = base.getMinutes()
+  const s = base.getSeconds()
+  const ms = base.getMilliseconds()
 
-  // 產生開始時間陣列
-  const starts = useMemo(() => {
-    if (!enableRepeat) return [firstDate.toISOString()]
-    return buildTwoWeekStarts(firstDate.toISOString(), Array.from(selected.values()))
-  }, [enableRepeat, selected, firstDate])
+  // 找到「第一筆所在週的 星期日 00:00」作為基準（本地時間）
+  const week0 = new Date(base)
+  week0.setHours(0, 0, 0, 0)
+  week0.setDate(week0.getDate() - week0.getDay()) // Sunday = 0
 
-  // 把預覽結果通知父層
-  useEffect(() => {
-    onStartsPreview?.(starts)
-  }, [starts, onStartsPreview])
+  const totalWeeks = Math.max(2, weeksDays.length || 0) // 最少兩週
+  const out: string[] = []
 
-  // 切換某個星期
-  const toggleDow = (d: number) => {
-    const next = new Set(selected)
-    next.has(d) ? next.delete(d) : next.add(d)
-    setSelected(next)
+  for (let w = 0; w < totalWeeks; w++) {
+    const rawDays = weeksDays[w] ?? []
+    // 過濾非法數字並去重
+    const days = Array.from(new Set(rawDays.filter((d) => d >= 0 && d <= 6)))
+
+    for (const d of days) {
+      const dt = new Date(week0)          // 以週起點為基準
+      dt.setDate(dt.getDate() + w * 7 + d) // 加上週位移＋星期位移
+      dt.setHours(h, m, s, ms)            // 套用原本的時分秒
+      out.push(dt.toISOString())
+    }
   }
 
-  // 快捷鍵
-  const selectWeekdays = () => setSelected(new Set([1,2,3,4,5]))
-  const selectAll = () => setSelected(new Set([0,1,2,3,4,5,6]))
-  const clearAll = () => setSelected(new Set())
-
-  return (
-    <div className={className ?? ''}>
-      <label className="flex items-center gap-2 mb-2">
-        <input
-          type="checkbox"
-          checked={enableRepeat}
-          onChange={(e) => setEnableRepeat(e.target.checked)}
-        />
-        <span>連續 2 週（自選星期）</span>
-      </label>
-
-      {enableRepeat && (
-        <div className="space-y-2">
-          <div className="flex flex-wrap gap-2">
-            {DOW_LABELS.map((lbl, i) => {
-              const active = selected.has(i)
-              return (
-                <button
-                  type="button"
-                  key={i}
-                  onClick={() => toggleDow(i)}
-                  className={
-                    'px-3 py-1 rounded-md border transition-colors ' +
-                    (active ? 'bg-zinc-800 text-white border-zinc-800' : 'bg-white text-zinc-800')
-                  }
-                  aria-pressed={active}
-                >
-                  週{lbl}
-                </button>
-              )
-            })}
-          </div>
-
-          <div className="flex gap-2 text-sm">
-            <button type="button" onClick={selectWeekdays} className="underline">
-              平日（週一～週五）
-            </button>
-            <button type="button" onClick={selectAll} className="underline">
-              全選
-            </button>
-            <button type="button" onClick={clearAll} className="underline">
-              全不選
-            </button>
-          </div>
-        </div>
-      )}
-
-      <div className="mt-2 text-sm text-zinc-500">
-        將建立：{starts.length} 筆（每筆固定 3 小時）
-      </div>
-    </div>
-  )
+  // 去重 + 按時間排序（ISO 字串可直接字典排序）
+  return Array.from(new Set(out)).sort()
 }
-
-export default RepeatTwoWeeksPicker
