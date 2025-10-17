@@ -146,22 +146,42 @@ export const termsApi = {
 /* ------------------------------------
  * （可選）Bookings API 簡單封裝
  * ------------------------------------ */
+export type BookingCreateInput = {
+  start: string
+  applicantName: string
+  email: string
+  phone: string
+  venue: '大會堂' | '康樂廳' | '其它教室'
+  category: string
+  note?: string
+}
+
 export const bookingsApi = {
-  create(body: {
-    start: string
-    applicantName: string
-    email: string
-    phone: string
-    venue: '大會堂' | '康樂廳' | '其它教室'
-    category: string
-    note?: string
-  }) {
+  create(body: BookingCreateInput) {
     return apiJson<{ id: string; start_ts: string; end_ts: string }>('/api/bookings', {
       method: 'POST',
       body: JSON.stringify(body),
     })
   },
+
+  // 新增：一次送出多筆（前端批次呼叫 create）
+  async createMany(base: Omit<BookingCreateInput, 'start'>, starts: string[]) {
+    const bodies = starts.map((start) => ({ ...base, start }))
+    const results = await Promise.allSettled(bodies.map((b) => this.create(b)))
+
+    const ok = results
+      .filter((r): r is PromiseFulfilledResult<{ id: string } & Record<string, any>> => r.status === 'fulfilled')
+      .map((r) => r.value)
+
+    const fail = results
+      .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+      .map((r) => r.reason)
+
+    return { ok, fail }
+  },
+
   list(days = 60) {
     return apiJson<{ items: any[] }>(`/api/bookings/list?days=${encodeURIComponent(String(days))}`)
   },
 }
+
