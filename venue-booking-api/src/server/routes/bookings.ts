@@ -30,7 +30,6 @@ function getTWParts(d: Date) {
     : wkStr.includes('五') ? 5 : 6
   return { hour, minute, wk }
 }
-
 function ruleCheckTW(start: Date): { ok: boolean; reason?: string } {
   const { hour, minute, wk } = getTWParts(start)
   if (wk === 0) return { ok: false, reason: '週日不開放借用' }
@@ -53,11 +52,11 @@ const VenueInput = z
 
 const CreateBody = z.object({
   start: z.preprocess(trim, z.string().min(10)),   // ISO 字串
-  applicantName: z.preprocess(trim, z.string().optional()), // 可選
-  email: z.preprocess(trim, z.string().optional()),         // 可選；若非空再驗證
-  phone: z.preprocess(trim, z.string().optional()),         // 可選
+  applicantName: z.preprocess(trim, z.string().optional()), // ← 可選
+  email: z.preprocess(trim, z.string().optional()),         // ← 可選；若非空再驗證
+  phone: z.preprocess(trim, z.string().optional()),         // ← 可選
   venue: VenueInput,
-  category: z.preprocess(trim, z.string().min(1)),          // 必填
+  category: z.preprocess(trim, z.string().min(1)),
   note: z.preprocess((v) => (typeof v === 'string' ? v : ''), z.string()).optional().default(''),
 })
 type CreateInput = z.infer<typeof CreateBody>
@@ -72,10 +71,9 @@ async function listBookings(days: number, status?: BookingStatus) {
     const params: any[] = []
     params.push(days)
     where.push(`start_ts >= (now() - ($${params.length}::text || ' days')::interval)`)
-    if (status) { params.push(status); where.push(`status = $${params.length}`) }
-
+    if (status && status !== 'pending') { params.push(status); where.push(`status = $${params.length}`) }
     const sql = `
-      SELECT id, start_ts, end_ts, status, category, venue, note, created_by, created_at
+      SELECT id, start_ts, end_ts, status, category, venue, note
       FROM bookings
       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
       ORDER BY start_ts ASC
@@ -90,7 +88,7 @@ async function listBookings(days: number, status?: BookingStatus) {
 
 /* ---------------- 建立申請單 ---------------- */
 router.post('/', async (req, res) => {
-  // 相容舊鍵名 → 映射到新欄位
+  // 允許前端舊鍵名 → 映射到新欄位
   const body: any = { ...(req.body ?? {}) }
   if (!body.applicantName) body.applicantName = body.name ?? body.applicant ?? body.applicant_name
   if (!body.email) body.email = body.mail ?? body.emailAddress ?? body.contactEmail
@@ -100,6 +98,7 @@ router.post('/', async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ error: 'invalid_body', details: parsed.error.flatten() })
   }
+
   const data = parsed.data as CreateInput
 
   // 若有填 email/phone 再做格式與長度檢查（不填也可過）
@@ -125,28 +124,16 @@ router.post('/', async (req, res) => {
   try {
     await client.query('BEGIN')
 
-    // ✅ 僅擋「有效狀態」：pending / approved / NULL（相容舊資料）
     const overlapSQL = `
-      SELECT id, start_ts, end_ts, venue, status
-      FROM bookings
+      SELECT 1 FROM bookings
       WHERE venue = $1
-        AND (status IS NULL OR status IN ('pending','approved'))
         AND tstzrange(start_ts, end_ts, '[)') && tstzrange($2::timestamptz, $3::timestamptz, '[)')
-      ORDER BY start_ts
       LIMIT 1
     `
-    const ov = await client.query<{ id: string; start_ts: string; end_ts: string; venue: string; status: BookingStatus | null }>(
-      overlapSQL,
-      [data.venue, startDate.toISOString(), endDate.toISOString()]
-    )
-
-    if (ov.rowCount > 0) {
+    const ov = await client.query(overlapSQL, [data.venue, startDate.toISOString(), endDate.toISOString()])
+    if ((ov.rowCount ?? 0) > 0) {
       await client.query('ROLLBACK')
-      return res.status(409).json({
-        error: 'overlap',
-        conflict: ov.rows[0],
-        message: '該時段已有審核中或已核准的申請',
-      })
+      return res.status(409).json({ error: 'overlap' })
     }
 
     const id = randomUUID()
