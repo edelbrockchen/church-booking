@@ -1,5 +1,5 @@
 // venue-booking-frontend/src/pages/BookingPage.tsx
-import React, { useMemo, useState, useEffect } from 'react'
+import React, { useMemo, useState } from 'react'
 import SubmitWithTermsGate from '../web/components/SubmitWithTermsGate'
 import { apiFetch } from '../web/lib/api'
 import RepeatTwoWeeksFlexiblePicker from '../web/components/RepeatTwoWeeksFlexiblePicker'
@@ -93,7 +93,7 @@ export default function BookingPage() {
     new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false }).format(d)
   const singleAllowedTip = `當日可申請時段（台北）：${tpeHhmm(earliest)} – ${tpeHhmm(dayCap)}（超出自動裁切/調整）`
   const singleEffectiveTip = `實際送出時段：${start.toLocaleString()} → ${end.toLocaleString()}${(singleAdj as any)?.cut || (singleAdj as any)?.adjusted ? '（已調整/裁切）' : ''}`
-  const startMinLocal = fmtLocal(earliest)
+  const startMinLocal = fmtLocal(earliest) // ✅ 只在此宣告一次
 
   /* ---------------- 重複模式（兩週可各自選星期） ---------------- */
   // 以「第一筆開始時間」為基準（兩週會以該週為第 1 週）
@@ -104,7 +104,6 @@ export default function BookingPage() {
   }, [firstStartStr, now])
 
   const [startsFromPicker, setStartsFromPicker] = useState<string[]>([])
-  // 由 starts 預覽實際送出時段與狀態
   type PreviewItem = { date: Date; start?: Date; end?: Date; status: 'ok'|'cut'|'skip_sun'|'invalid' }
   const repeatPreview: PreviewItem[] = useMemo(() => {
     const items: PreviewItem[] = []
@@ -140,7 +139,6 @@ export default function BookingPage() {
   function validateRepeat(): string | null {
     if (!firstStartStr) return '請選擇第一筆開始日期時間'
     if (!startsFromPicker.length) return '請在下方勾選至少一天'
-    // 兩週為上限（Flexible 元件本身就是 2 週）；不額外檢查
     return null
   }
 
@@ -244,8 +242,6 @@ export default function BookingPage() {
   }
 
   /* ---------------- UI ---------------- */
-  // 單日模式：最小可選時間（當日台北最早）
-  const startMinLocal = fmtLocal(earliestOfDayTPE(start))
   // 重複模式：預設「第一筆開始」的最小時間（以當天台北 07:00）
   const firstStartMinLocal = useMemo(() => fmtLocal(earliestOfDayTPE(new Date(firstStartISO))), [firstStartISO])
 
