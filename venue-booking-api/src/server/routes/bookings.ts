@@ -52,9 +52,9 @@ const VenueInput = z
 
 const CreateBody = z.object({
   start: z.preprocess(trim, z.string().min(10)),   // ISO 字串
-  applicantName: z.preprocess(trim, z.string().optional()), // ← 可選
-  email: z.preprocess(trim, z.string().optional()),         // ← 可選；若非空再驗證
-  phone: z.preprocess(trim, z.string().optional()),         // ← 可選
+  applicantName: z.preprocess(trim, z.string().optional()), // 可選
+  email: z.preprocess(trim, z.string().optional()),
+  phone: z.preprocess(trim, z.string().optional()),
   venue: VenueInput,
   category: z.preprocess(trim, z.string().min(1)),
   note: z.preprocess((v) => (typeof v === 'string' ? v : ''), z.string()).optional().default(''),
@@ -88,7 +88,7 @@ async function listBookings(days: number, status?: BookingStatus) {
 
 /* ---------------- 建立申請單 ---------------- */
 router.post('/', async (req, res) => {
-  // 允許前端舊鍵名 → 映射到新欄位
+  // 相容舊鍵名 → 映射到新欄位
   const body: any = { ...(req.body ?? {}) }
   if (!body.applicantName) body.applicantName = body.name ?? body.applicant ?? body.applicant_name
   if (!body.email) body.email = body.mail ?? body.emailAddress ?? body.contactEmail
@@ -101,7 +101,7 @@ router.post('/', async (req, res) => {
 
   const data = parsed.data as CreateInput
 
-  // 若有填 email/phone 再做格式與長度檢查（不填也可過）
+  // 有填才驗證 email/phone
   if (data.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) {
     return res.status(400).json({ error: 'invalid_body', details: { fieldErrors: { email: ['Invalid email'] }, formErrors: [] } })
   }
@@ -124,24 +124,25 @@ router.post('/', async (req, res) => {
   try {
     await client.query('BEGIN')
 
-    // ✅ 只擋「有效狀態」：pending / approved / NULL（相容舊資料）
+    // ❶ 只把 pending / approved（或 status 為 NULL）視為「會占用」的時段
     const overlapSQL = `
       SELECT id, start_ts, end_ts, venue, status
       FROM bookings
       WHERE venue = $1
         AND (status IS NULL OR status IN ('pending','approved'))
         AND tstzrange(start_ts, end_ts, '[)') && tstzrange($2::timestamptz, $3::timestamptz, '[)')
-      ORDER BY start_ts
       LIMIT 1
     `
     const ov = await client.query(overlapSQL, [data.venue, startDate.toISOString(), endDate.toISOString()])
     if ((ov.rowCount ?? 0) > 0) {
       await client.query('ROLLBACK')
-      return res.status(409).json({
-        error: 'overlap',
-        conflict: ov.rows[0],
-        message: '該時段已有審核中或已核准的申請',
-      })
+      return res
+        .status(409)
+        .json({
+          error: 'overlap',
+          conflict: ov.rows[0],
+          message: '該時段已有審核中或已核准的申請',
+        })
     }
 
     const id = randomUUID()
@@ -159,9 +160,9 @@ router.post('/', async (req, res) => {
       id,
       startDate.toISOString(),
       endDate.toISOString(),
-      displayName,   // created_by
+      displayName,
       data.category,
-      data.venue,    // 已正規化
+      data.venue, // 已正規化
       extra.trim(),
     ])
 
