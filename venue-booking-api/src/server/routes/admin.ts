@@ -102,10 +102,7 @@ router.get('/review', requireAdmin, async (req, res) => {
     // 預設不含已結束的
     if (!includeEnded) where.push('end_ts >= now()')
 
-    if (venue) {
-      params.push(venue)
-      where.push(`venue = $${params.length}`)
-    }
+    if (venue) { params.push(venue); where.push(`venue = $${params.length}`) }
 
     if (q) {
       params.push(`%${q}%`)
@@ -151,7 +148,11 @@ router.get('/review.csv', requireAdmin, async (req, res) => {
     where.push(`start_ts >= (now() - ($${params.length}::text || ' days')::interval)`)
     if (!includeEnded) where.push('end_ts >= now()')
     if (venue) { params.push(venue); where.push(`venue = $${params.length}`) }
-    if (q) { params.push(`%${q}%`); const pidx = `$${params.length}`; where.push(`(lower(coalesce(note,'')||' '||coalesce(category,'')||' '||coalesce(venue,'')||' '||coalesce(created_by,''))) like ${pidx}`) }
+    if (q) {
+      params.push(`%${q}%`)
+      const pidx = `$${params.length}`
+      where.push(`(lower(coalesce(note,'')||' '||coalesce(category,'')||' '||coalesce(venue,'')||' '||coalesce(created_by,''))) like ${pidx}`)
+    }
 
     const sql = `
       SELECT id, start_ts, end_ts, created_at, created_by, status, category, venue, note
@@ -189,10 +190,40 @@ router.get('/review.csv', requireAdmin, async (req, res) => {
   }
 })
 
-/* ---------------- Decision: approve / reject / cancel ---------------- */
-const DecisionBody = z.object({
-  action: z.enum(['approve', 'reject', 'cancel']),
-})
+/* ---------------- 審核決策核心 ---------------- */
+type AdminDecision = 'approve' | 'reject' | 'cancel'
+
+async function runDecision(client: any, id: string, action: AdminDecision) {
+  if (action === 'approve') {
+    // 核准前檢查與有效狀態是否重疊（排除自己）
+    const overlapSQL = `
+      SELECT b2.id, b2.start_ts, b2.end_ts, b2.venue
+      FROM bookings b1
+      JOIN bookings b2
+        ON b2.id <> b1.id
+       AND b2.venue = b1.venue
+       AND (b2.status IS NULL OR b2.status IN ('pending','approved'))
+       AND tstzrange(b2.start_ts, b2.end_ts, '[)') && tstzrange(b1.start_ts, b1.end_ts, '[)')
+      WHERE b1.id = $1
+      LIMIT 1
+    `
+    const ov = await client.query(overlapSQL, [id])
+    if ((ov.rowCount ?? 0) > 0) {
+      const err: any = new Error('overlap')
+      err.status = 409
+      err.payload = { error: 'overlap', conflict: ov.rows[0] }
+      throw err
+    }
+    await client.query(`UPDATE bookings SET status = 'approved' WHERE id = $1`, [id])
+  } else if (action === 'reject') {
+    await client.query(`UPDATE bookings SET status = 'rejected' WHERE id = $1`, [id])
+  } else {
+    await client.query(`UPDATE bookings SET status = 'cancelled' WHERE id = $1`, [id])
+  }
+}
+
+/* ---------------- 新：標準決策端點 ---------------- */
+const DecisionBody = z.object({ action: z.enum(['approve', 'reject', 'cancel']) })
 
 router.post('/review/:id/decision', requireAdmin, async (req, res) => {
   const p = pool
@@ -200,43 +231,44 @@ router.post('/review/:id/decision', requireAdmin, async (req, res) => {
 
   const parsed = DecisionBody.safeParse(req.body)
   if (!parsed.success) return res.status(400).json({ error: 'invalid_body' })
-  const { action } = parsed.data
+  const action = parsed.data.action
   const id = String(req.params.id)
 
   const client = await p.connect()
   try {
     await client.query('BEGIN')
-
-    if (action === 'approve') {
-      // 核准前檢查與有效狀態是否重疊（排除自己）
-      const overlapSQL = `
-        SELECT b2.id, b2.start_ts, b2.end_ts, b2.venue
-        FROM bookings b1
-        JOIN bookings b2
-          ON b2.id <> b1.id
-         AND b2.venue = b1.venue
-         AND (b2.status IS NULL OR b2.status IN ('pending','approved'))
-         AND tstzrange(b2.start_ts, b2.end_ts, '[)') && tstzrange(b1.start_ts, b1.end_ts, '[)')
-        WHERE b1.id = $1
-        LIMIT 1
-      `
-      const ov = await client.query(overlapSQL, [id])
-      if ((ov.rowCount ?? 0) > 0) {
-        await client.query('ROLLBACK')
-        return res.status(409).json({ error: 'overlap', conflict: ov.rows[0] })
-      }
-      await client.query(`UPDATE bookings SET status = 'approved' WHERE id = $1`, [id])
-    } else if (action === 'reject') {
-      await client.query(`UPDATE bookings SET status = 'rejected' WHERE id = $1`, [id])
-    } else {
-      await client.query(`UPDATE bookings SET status = 'cancelled' WHERE id = $1`, [id])
-    }
-
+    await runDecision(client, id, action)
     await client.query('COMMIT')
     res.json({ ok: true })
-  } catch (err) {
+  } catch (err: any) {
     await client.query('ROLLBACK')
+    if (err?.status === 409 && err?.payload) return res.status(409).json(err.payload)
     console.error('[admin] decision error:', err)
+    res.status(500).json({ error: 'internal_error' })
+  } finally {
+    client.release()
+  }
+})
+
+/* ---------------- 舊版相容：bookings/:id/{approve|reject|cancel} ---------------- */
+// 舊前端會呼叫：POST /api/admin/bookings/:id/reject（或 approve/cancel）
+router.post('/bookings/:id/:action(approve|reject|cancel)', requireAdmin, async (req, res) => {
+  const p = pool
+  if (!p) return res.status(503).json({ error: 'db_unavailable' })
+
+  const action = req.params.action as AdminDecision
+  const id = String(req.params.id)
+
+  const client = await p.connect()
+  try {
+    await client.query('BEGIN')
+    await runDecision(client, id, action)
+    await client.query('COMMIT')
+    res.json({ ok: true })
+  } catch (err: any) {
+    await client.query('ROLLBACK')
+    if (err?.status === 409 && err?.payload) return res.status(409).json(err.payload)
+    console.error('[admin] legacy decision error:', err)
     res.status(500).json({ error: 'internal_error' })
   } finally {
     client.release()
