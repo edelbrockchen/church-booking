@@ -1,28 +1,25 @@
-// src/web/agree.ts
-import { apiFetch } from './web/lib/api'
+// 統一處理「已同意規範」的本機與伺服器狀態
+import { termsApi } from './lib/api'
 
-export async function recordAgreementOnServer() {
-  try {
-    await apiFetch('/api/terms/accept', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      // apiFetch 已內建 credentials: 'include'
-    })
-  } catch {}
+const KEY = 'terms.accepted.v1'
+
+export function isAgreedLocal() {
+  return localStorage.getItem(KEY) === '1'
+}
+export function setAgreedLocal() {
+  localStorage.setItem(KEY, '1')
 }
 
-export async function fetchAgreementFromServer(): Promise<boolean> {
+export async function recordAgreementOnServer(email?: string) {
+  // 重要：這會用 credentials=include 呼叫 /api/terms/accept，寫入 Session
+  await termsApi.accept(email)
+}
+
+export async function fetchAgreementFromServer() {
   try {
-    const r = await apiFetch('/api/terms/status')
-    if (!r.ok) return false
-    const j = await r.json()
-    return !!j?.accepted
+    const s = await termsApi.status()
+    return !!s.accepted
   } catch {
     return false
   }
 }
-
-const KEY = 'vb_terms_accepted'
-export function setAgreedLocal() { localStorage.setItem(KEY, '1') }
-export function isAgreedLocal() { return localStorage.getItem(KEY) === '1' }
-export function clearAgreedLocal() { localStorage.removeItem(KEY) }
