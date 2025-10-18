@@ -123,6 +123,26 @@ export const adminApi = {
   async logout() {
     return apiJson<{ ok: true }>('/api/admin/logout', { method: 'POST' })
   },
+
+  // ★ 新增：審核決策（與後端 /api/admin/review/:id/decision 對齊）
+  approve(id: string, reason?: string) {
+    return apiJson<{ ok: true }>(`/api/admin/review/${encodeURIComponent(id)}/decision`, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'approve', reason }),
+    })
+  },
+  reject(id: string, reason?: string) {
+    return apiJson<{ ok: true }>(`/api/admin/review/${encodeURIComponent(id)}/decision`, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'reject', reason }),
+    })
+  },
+  cancel(id: string, reason?: string) {
+    return apiJson<{ ok: true }>(`/api/admin/review/${encodeURIComponent(id)}/decision`, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'cancel', reason }),
+    })
+  },
 }
 
 /* ------------------------------------
@@ -164,7 +184,7 @@ export const bookingsApi = {
     })
   },
 
-  // 新增：一次送出多筆（前端批次呼叫 create）
+  // 一次送出多筆（前端批次呼叫 create）
   async createMany(base: Omit<BookingCreateInput, 'start'>, starts: string[]) {
     const bodies = starts.map((start) => ({ ...base, start }))
     const results = await Promise.allSettled(bodies.map((b) => this.create(b)))
@@ -184,4 +204,3 @@ export const bookingsApi = {
     return apiJson<{ items: any[] }>(`/api/bookings/list?days=${encodeURIComponent(String(days))}`)
   },
 }
-

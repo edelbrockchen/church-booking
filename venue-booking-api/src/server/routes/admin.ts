@@ -95,21 +95,14 @@ router.get('/review', requireAdmin, async (req, res) => {
     const where: string[] = []
     const params: any[] = []
 
-    // 時間窗（從現在往回 N 天）
     params.push(days)
     where.push(`start_ts >= (now() - ($${params.length}::text || ' days')::interval)`)
-
-    // 預設不含已結束的
     if (!includeEnded) where.push('end_ts >= now()')
-
     if (venue) { params.push(venue); where.push(`venue = $${params.length}`) }
-
     if (q) {
       params.push(`%${q}%`)
       const pidx = `$${params.length}`
-      where.push(
-        `(lower(coalesce(note,'')||' '||coalesce(category,'')||' '||coalesce(venue,'')||' '||coalesce(created_by,''))) like ${pidx}`
-      )
+      where.push(`(lower(coalesce(note,'')||' '||coalesce(category,'')||' '||coalesce(venue,'')||' '||coalesce(created_by,''))) like ${pidx}`)
     }
 
     const sql = `
@@ -192,8 +185,20 @@ router.get('/review.csv', requireAdmin, async (req, res) => {
 
 /* ---------------- 審核決策核心 ---------------- */
 type AdminDecision = 'approve' | 'reject' | 'cancel'
+const DecisionBody = z.object({
+  action: z.enum(['approve','reject','cancel']),
+  reason: z.string().max(200).optional(),
+})
 
-async function runDecision(client: any, id: string, action: AdminDecision) {
+async function runDecision(client: any, id: string, action: AdminDecision, byUser: string, reason?: string) {
+  const nowTag = new Date().toISOString()
+  const notePatch =
+    action === 'approve'
+      ? `\n[approved by ${byUser}] ${nowTag}${reason ? ` ${reason}` : ''}`
+      : action === 'reject'
+      ? `\n[rejected by ${byUser}] ${nowTag}${reason ? ` ${reason}` : ''}`
+      : `\n[cancelled by ${byUser}] ${nowTag}${reason ? ` ${reason}` : ''}`
+
   if (action === 'approve') {
     // 核准前檢查與有效狀態是否重疊（排除自己）
     const overlapSQL = `
@@ -214,30 +219,38 @@ async function runDecision(client: any, id: string, action: AdminDecision) {
       err.payload = { error: 'overlap', conflict: ov.rows[0] }
       throw err
     }
-    await client.query(`UPDATE bookings SET status = 'approved' WHERE id = $1`, [id])
+    await client.query(
+      `UPDATE bookings SET status='approved', note = COALESCE(note,'') || $2 WHERE id=$1`,
+      [id, notePatch]
+    )
   } else if (action === 'reject') {
-    await client.query(`UPDATE bookings SET status = 'rejected' WHERE id = $1`, [id])
+    await client.query(
+      `UPDATE bookings SET status='rejected', note = COALESCE(note,'') || $2 WHERE id=$1`,
+      [id, notePatch]
+    )
   } else {
-    await client.query(`UPDATE bookings SET status = 'cancelled' WHERE id = $1`, [id])
+    await client.query(
+      `UPDATE bookings SET status='cancelled', note = COALESCE(note,'') || $2 WHERE id=$1`,
+      [id, notePatch]
+    )
   }
 }
 
 /* ---------------- 新：標準決策端點 ---------------- */
-const DecisionBody = z.object({ action: z.enum(['approve', 'reject', 'cancel']) })
-
 router.post('/review/:id/decision', requireAdmin, async (req, res) => {
   const p = pool
   if (!p) return res.status(503).json({ error: 'db_unavailable' })
 
   const parsed = DecisionBody.safeParse(req.body)
   if (!parsed.success) return res.status(400).json({ error: 'invalid_body' })
-  const action = parsed.data.action
+  const { action, reason } = parsed.data
   const id = String(req.params.id)
+  const by = req.session!.admin!.user
 
   const client = await p.connect()
   try {
     await client.query('BEGIN')
-    await runDecision(client, id, action)
+    await runDecision(client, id, action, by, reason)
     await client.query('COMMIT')
     res.json({ ok: true })
   } catch (err: any) {
@@ -258,11 +271,13 @@ router.post('/bookings/:id/:action(approve|reject|cancel)', requireAdmin, async 
 
   const action = req.params.action as AdminDecision
   const id = String(req.params.id)
+  const by = req.session!.admin!.user
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined
 
   const client = await p.connect()
   try {
     await client.query('BEGIN')
-    await runDecision(client, id, action)
+    await runDecision(client, id, action, by, reason)
     await client.query('COMMIT')
     res.json({ ok: true })
   } catch (err: any) {
