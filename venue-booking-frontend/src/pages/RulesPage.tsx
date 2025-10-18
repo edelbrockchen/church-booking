@@ -1,36 +1,7 @@
-// venue-booking-frontend/src/pages/RulesPage.tsx
-import React, { useState } from 'react'
+import React from 'react'
 import { CheckCircle2 } from 'lucide-react'
-import { setAgreedLocal, recordAgreementOnServer } from '../web/agree'
 
-type Props = {
-  /** 父層可選擇傳入：同意後要做的事（例如切到「申請借用」分頁） */
-  onAgreed?: () => void
-}
-
-export default function RulesPage({ onAgreed }: Props) {
-  const [busy, setBusy] = useState(false)
-  const [msg, setMsg] = useState<string>('')
-
-  async function handleAgree() {
-    setBusy(true)
-    setMsg('')
-    try {
-      // 先記本機，再通知後端（會帶 credentials）
-      setAgreedLocal()
-      await recordAgreementOnServer()
-
-      setMsg('已記錄同意，您可以前往「申請借用」頁面。')
-      onAgreed?.()
-    } catch {
-      // 後端失敗也至少保留本機紀錄，提示使用者稍後再試
-      setMsg('已在本機記錄同意，但伺服器連線失敗；之後進入「申請借用」時會再嘗試同步。')
-      onAgreed?.()
-    } finally {
-      setBusy(false)
-    }
-  }
-
+export default function RulesPage({ onAgreed }: { onAgreed: () => void }) {
   return (
     <div className="grid gap-4 md:grid-cols-3">
       <div className="md:col-span-2 card">
@@ -38,7 +9,6 @@ export default function RulesPage({ onAgreed }: Props) {
         <p className="text-sm text-slate-600 mb-3">
           教堂借用前請務必詳細閱讀以下規定：
         </p>
-
         <ol className="list-decimal pl-6 space-y-2 text-sm text-slate-700">
           <li>
             除支聯會及支會年初排定之聚會及活動外，每月1號後核准當月及下個月內的申請，每次只核准2個月內的申請。（經過實務設施代表及主教團核准，才算正式核准。）
@@ -53,33 +23,25 @@ export default function RulesPage({ onAgreed }: Props) {
           </li>
           <li>申請優先順序：當地的支聯會、支會 ＞ 其餘支聯會、傳道部及支會。</li>
           <li>核准優先順序：教會正式聚會 ＞ 支聯會、傳道部、支會、各組織的活動 ＞ 一般婚喪喜慶 ＞ 其餘各類型活動。</li>
-          <li>如雖已核準場地使用，但因支聯會或支會臨時需使用該場地時，將取消使用核准。</li>
+          <li>如雖已核准場地使用，但因支聯會或支會臨時需使用該場地時，將取消使用核准。</li>
           <li>所有申請的活動，申請人必須在場，場地才開放使用。</li>
           <li>大會堂只為正式聚會而使用，其餘活動一律不開放。所有例外皆需經主教核准。</li>
           <li>事後清潔：清掃拖地、桌椅歸位、廚房與洗手間垃圾清理與補充耗材、鏡面清潔…等；詳情依實務設施代表指示。</li>
           <li>請確認上列之條文可以接受再借用，以免發生爭議。教會有權取消任何違反規定之活動。感謝!!</li>
         </ol>
 
-        {/* 動作 */}
-        <div className="mt-6 flex flex-col items-center gap-2">
-          <button
-            type="button"
-            onClick={handleAgree}
-            disabled={busy}
-            className="btn disabled:opacity-60"
-            aria-busy={busy}
-          >
-            <CheckCircle2 className="size-4" />
-            {busy ? '處理中…' : '我已閱讀並同意'}
+        {/* ✅ 按鈕水平置中 */}
+        <div className="mt-6 flex justify-center">
+          <button className="btn" onClick={onAgreed}>
+            <CheckCircle2 className="size-4" /> 我已閱讀並同意
           </button>
-          {msg && <div className="text-sm text-slate-600">{msg}</div>}
         </div>
       </div>
 
       <aside className="card">
         <h3 className="mb-2 font-medium">備註</h3>
         <p className="text-sm text-slate-600">
-          同意後才可進入「申請借用」頁面。若當下網路不穩，系統會在您後續送出申請時再次嘗試與伺服器同步。
+          同意後才可進入「申請借用」頁面。
         </p>
       </aside>
     </div>
