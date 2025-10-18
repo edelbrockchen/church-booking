@@ -38,7 +38,7 @@ export default function TermsGateModal({ open, onClose, onAgreed }: Props) {
           <p>請詳閱並同意本借用規範後再送出申請。</p>
           <ul>
             <li>每日最早 07:00；週一/三最晚 18:00；其他日至 21:30；週日禁用。</li>
-            <li>單日最多 3 小時；重複日期自動裁切/略過不合規之日。</li>
+            <li>單日最多 3.5 小時；重複日期自動裁切/略過不合規之日。</li>
           </ul>
         </div>
         <div className="mt-6 flex justify-end gap-2">
