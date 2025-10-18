@@ -78,7 +78,17 @@ export default function App() {
 
       {/* 你若想在 checking=true 時顯示 Loading，可在此加載入指示 */}
       {tab === 'calendar' && <CalendarPage />}
-      {tab === 'rules' && <RulesPage />}
+
+      {/* 傳入 onAgreed：RulesPage 內部會寫入同意並呼叫這個回呼 */}
+      {tab === 'rules' && (
+        <RulesPage
+          onAgreed={() => {
+            setAgreed(true)     // 更新本地狀態（RulesPage 已經寫入 local/server）
+            setTab('apply')      // 直接切到「申請借用」
+          }}
+        />
+      )}
+
       {tab === 'apply' && <BookingPage />}
       {tab === 'admin' && <AdminReviewPage />}
 
