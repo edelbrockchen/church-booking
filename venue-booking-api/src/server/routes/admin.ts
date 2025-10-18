@@ -4,9 +4,6 @@ import bcrypt from 'bcryptjs'
 import { z } from 'zod'
 import { makePool } from '../db'
 
-// --------------------------------------------------
-// Types & Session typing
-// --------------------------------------------------
 declare module 'express-session' {
   interface SessionData {
     admin?: { user: string }
@@ -14,11 +11,9 @@ declare module 'express-session' {
 }
 
 const router = Router()
-const pool = makePool()
+const pool = makePool() // Pool | null
 
-// --------------------------------------------------
-// Helpers
-// --------------------------------------------------
+/* ---------------- Helpers ---------------- */
 function getUsersFromEnv(): Record<string, string> {
   // Preferred: ADMIN_USERS_JSON = { "user": "$2b$10$hash..." }
   const adminUsersJson = process.env.ADMIN_USERS_JSON
@@ -31,9 +26,7 @@ function getUsersFromEnv(): Record<string, string> {
     }
   }
   // Legacy: ADMIN_PASSWORD=plain or bcrypt hash for default user "admin"
-  if (process.env.ADMIN_PASSWORD) {
-    return { admin: process.env.ADMIN_PASSWORD }
-  }
+  if (process.env.ADMIN_PASSWORD) return { admin: process.env.ADMIN_PASSWORD }
   return {}
 }
 
@@ -42,9 +35,7 @@ function isBcryptHash(str: string): boolean {
 }
 
 async function verifyPassword(input: string, expected: string): Promise<boolean> {
-  if (isBcryptHash(expected)) {
-    return await bcrypt.compare(input, expected)
-  }
+  if (isBcryptHash(expected)) return await bcrypt.compare(input, expected)
   return input === expected
 }
 
@@ -53,9 +44,7 @@ function requireAdmin(req: Request, res: Response, next: NextFunction) {
   return res.status(401).json({ error: 'unauthorized' })
 }
 
-// --------------------------------------------------
-// Auth endpoints
-// --------------------------------------------------
+/* ---------------- Auth ---------------- */
 const LoginBody = z.object({
   username: z.string().min(1),
   password: z.string().min(1),
@@ -86,33 +75,32 @@ router.post('/logout', (req, res) => {
   res.json({ ok: true })
 })
 
-// --------------------------------------------------
-// Review list
-// --------------------------------------------------
-// 前端參數（皆可選）：
-// days: number (default 60)
-// venue: string
-// includeEnded: 'true' | 'false' (default false)
-// q: string (search)
-
+/* ---------------- Review list ---------------- */
+// Query params:
+// - days: number (default 60)
+// - venue: string
+// - includeEnded: 'true' | 'false' (default false)
+// - q: string (fuzzy search)
 router.get('/review', requireAdmin, async (req, res) => {
+  const p = pool
+  if (!p) return res.status(503).json({ error: 'db_unavailable' })
+
   const days = Math.max(1, Math.min(365, Number(req.query.days ?? 60)))
   const venue = typeof req.query.venue === 'string' && req.query.venue.trim() !== '' ? req.query.venue.trim() : null
   const includeEnded = String(req.query.includeEnded ?? 'false') === 'true'
   const q = typeof req.query.q === 'string' && req.query.q.trim() !== '' ? req.query.q.trim().toLowerCase() : null
 
-  const client = await pool.connect()
+  const client = await p.connect()
   try {
     const where: string[] = []
     const params: any[] = []
 
-    // Time window
+    // 時間窗（從現在往回 N 天）
     params.push(days)
-    where.push(`start_ts >= (now() - ($${params.length}::text || ' days')::interval)`) // now - '<days> days'
+    where.push(`start_ts >= (now() - ($${params.length}::text || ' days')::interval)`)
 
-    if (!includeEnded) {
-      where.push('end_ts >= now()')
-    }
+    // 預設不含已結束的
+    if (!includeEnded) where.push('end_ts >= now()')
 
     if (venue) {
       params.push(venue)
@@ -120,10 +108,11 @@ router.get('/review', requireAdmin, async (req, res) => {
     }
 
     if (q) {
-      // Search in a few columns
       params.push(`%${q}%`)
-      const p = `$${params.length}`
-      where.push(`(lower(coalesce(note,'')||' '||coalesce(category,'')||' '||coalesce(venue,'')||' '||coalesce(created_by,''))) like ${p}`)
+      const pidx = `$${params.length}`
+      where.push(
+        `(lower(coalesce(note,'')||' '||coalesce(category,'')||' '||coalesce(venue,'')||' '||coalesce(created_by,''))) like ${pidx}`
+      )
     }
 
     const sql = `
@@ -143,23 +132,26 @@ router.get('/review', requireAdmin, async (req, res) => {
   }
 })
 
-// 匯出 CSV（與 review 篩選條件一致）
+/* ---------------- Review CSV export ---------------- */
 router.get('/review.csv', requireAdmin, async (req, res) => {
+  const p = pool
+  if (!p) return res.status(503).json({ error: 'db_unavailable' })
+
   const days = Math.max(1, Math.min(365, Number(req.query.days ?? 60)))
   const venue = typeof req.query.venue === 'string' && req.query.venue.trim() !== '' ? req.query.venue.trim() : null
   const includeEnded = String(req.query.includeEnded ?? 'false') === 'true'
   const q = typeof req.query.q === 'string' && req.query.q.trim() !== '' ? req.query.q.trim().toLowerCase() : null
 
-  const client = await pool.connect()
+  const client = await p.connect()
   try {
     const where: string[] = []
     const params: any[] = []
 
     params.push(days)
-    where.push(`start_ts >= (now() - ($${params.length}::text || ' days')::interval)`) 
+    where.push(`start_ts >= (now() - ($${params.length}::text || ' days')::interval)`)
     if (!includeEnded) where.push('end_ts >= now()')
     if (venue) { params.push(venue); where.push(`venue = $${params.length}`) }
-    if (q) { params.push(`%${q}%`); const p = `$${params.length}`; where.push(`(lower(coalesce(note,'')||' '||coalesce(category,'')||' '||coalesce(venue,'')||' '||coalesce(created_by,''))) like ${p}`) }
+    if (q) { params.push(`%${q}%`); const pidx = `$${params.length}`; where.push(`(lower(coalesce(note,'')||' '||coalesce(category,'')||' '||coalesce(venue,'')||' '||coalesce(created_by,''))) like ${pidx}`) }
 
     const sql = `
       SELECT id, start_ts, end_ts, created_at, created_by, status, category, venue, note
@@ -197,25 +189,26 @@ router.get('/review.csv', requireAdmin, async (req, res) => {
   }
 })
 
-/* --------------------------------------------------
- * 新增：審核決策（approve / reject / cancel）
- * -------------------------------------------------- */
+/* ---------------- Decision: approve / reject / cancel ---------------- */
 const DecisionBody = z.object({
   action: z.enum(['approve', 'reject', 'cancel']),
 })
 
 router.post('/review/:id/decision', requireAdmin, async (req, res) => {
+  const p = pool
+  if (!p) return res.status(503).json({ error: 'db_unavailable' })
+
   const parsed = DecisionBody.safeParse(req.body)
   if (!parsed.success) return res.status(400).json({ error: 'invalid_body' })
   const { action } = parsed.data
   const id = String(req.params.id)
 
-  const client = await pool.connect()
+  const client = await p.connect()
   try {
     await client.query('BEGIN')
 
-    // 核准：先確認與「有效狀態（pending/approved/NULL）」無重疊（排除自己）
     if (action === 'approve') {
+      // 核准前檢查與有效狀態是否重疊（排除自己）
       const overlapSQL = `
         SELECT b2.id, b2.start_ts, b2.end_ts, b2.venue
         FROM bookings b1
@@ -228,7 +221,7 @@ router.post('/review/:id/decision', requireAdmin, async (req, res) => {
         LIMIT 1
       `
       const ov = await client.query(overlapSQL, [id])
-      if (ov.rowCount > 0) {
+      if ((ov.rowCount ?? 0) > 0) {
         await client.query('ROLLBACK')
         return res.status(409).json({ error: 'overlap', conflict: ov.rows[0] })
       }
