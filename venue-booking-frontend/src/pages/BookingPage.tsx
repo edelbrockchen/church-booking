@@ -8,9 +8,6 @@ type Category = '' | '教會聚會' | '社團活動' | '研習' | '其他'
 type Venue = '大會堂' | '康樂廳' | '其它教室'
 type Mode = 'single' | 'repeat'
 
-// === 固定時長：3.5 小時 ===
-const DURATION_HOURS = 3.5
-
 function addHours(d: Date, h: number) { return new Date(d.getTime() + h * 3600_000) }
 function fmtDate(d: Date) {
   const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), dd = String(d.getDate()).padStart(2, '0')
@@ -38,7 +35,7 @@ function latestCapTPE(d: Date) {
 }
 function isSundayTPE(d: Date) { return tpeDow(d) === 0 }
 
-/** 將任意開始時間調整到「可申請窗口」並回傳狀態（固定 3.5 小時） */
+/** 將任意開始時間調整到「可申請窗口」並回傳狀態（時長 3.5 小時） */
 function adjustToWindowTPE(s: Date) {
   if (isSundayTPE(s)) return { status: 'sunday' as const }
   const earliest = earliestOfDayTPE(s)
@@ -54,7 +51,7 @@ function adjustToWindowTPE(s: Date) {
     return { status: 'invalid' as const } // 當日可申請窗口已過
   }
 
-  const targetEnd = addHours(start, DURATION_HOURS)
+  const targetEnd = addHours(start, 3.5)
   const end = new Date(Math.min(targetEnd.getTime(), cap.getTime()))
   const cut = end.getTime() < targetEnd.getTime()
   return { status: (cut || adjusted) ? ('adjusted' as const) : ('ok' as const), start, end, adjusted, cut }
@@ -90,13 +87,13 @@ export default function BookingPage() {
   const singleAdj = adjustToWindowTPE(start)
   const dayCap = latestCapTPE(start)
   const earliest = earliestOfDayTPE(start)
-  const end = (singleAdj as any)?.end ? (singleAdj as any).end as Date : addHours(start, DURATION_HOURS)
+  const end = (singleAdj as any)?.end ? (singleAdj as any).end as Date : addHours(start, 3.5)
 
   const tpeHhmm = (d: Date) =>
     new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false }).format(d)
-  const singleAllowedTip = `當日可申請時段（台北）：${tpeHhmm(earliest)} – ${tpeHhmm(dayCap)}（超出自動裁切/調整；時長 3.5 小時）`
+  const singleAllowedTip = `當日可申請時段（台北）：${tpeHhmm(earliest)} – ${tpeHhmm(dayCap)}（超出自動裁切/調整）`
   const singleEffectiveTip = `實際送出時段：${start.toLocaleString()} → ${end.toLocaleString()}${(singleAdj as any)?.cut || (singleAdj as any)?.adjusted ? '（已調整/裁切）' : ''}`
-  const startMinLocal = fmtLocal(earliest)
+  const startMinLocal = fmtLocal(earliest) // ✅ 只宣告一次，供單日模式 input min 使用
 
   /* ---------------- 重複模式（兩週可各自選星期） ---------------- */
   // 以「第一筆開始時間」為基準（兩週會以該週為第 1 週）
@@ -245,8 +242,6 @@ export default function BookingPage() {
   }
 
   /* ---------------- UI ---------------- */
-  // 單日模式：最小可選時間（當日台北最早）
-  const startMinLocal = fmtLocal(earliestOfDayTPE(start))
   // 重複模式：預設「第一筆開始」的最小時間（以當天台北 07:00）
   const firstStartMinLocal = useMemo(() => fmtLocal(earliestOfDayTPE(new Date(firstStartISO))), [firstStartISO])
 
@@ -390,7 +385,7 @@ export default function BookingPage() {
                   className="rounded-lg border px-3 py-2"
                   min={firstStartMinLocal}
                 />
-                <div className="text-xs text-slate-500">每日最早 07:00；週一/週三最晚 18:00；其餘至 21:30；週日不可申請（單次時長 3.5 小時）。</div>
+                <div className="text-xs text-slate-500">每日最早 07:00；週一/週三最晚 18:00；其餘至 21:30；週日不可申請。</div>
               </label>
             </div>
 
