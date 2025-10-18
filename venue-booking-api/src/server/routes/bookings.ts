@@ -124,16 +124,24 @@ router.post('/', async (req, res) => {
   try {
     await client.query('BEGIN')
 
+    // ✅ 只擋「有效狀態」：pending / approved / NULL（相容舊資料）
     const overlapSQL = `
-      SELECT 1 FROM bookings
+      SELECT id, start_ts, end_ts, venue, status
+      FROM bookings
       WHERE venue = $1
+        AND (status IS NULL OR status IN ('pending','approved'))
         AND tstzrange(start_ts, end_ts, '[)') && tstzrange($2::timestamptz, $3::timestamptz, '[)')
+      ORDER BY start_ts
       LIMIT 1
     `
     const ov = await client.query(overlapSQL, [data.venue, startDate.toISOString(), endDate.toISOString()])
     if ((ov.rowCount ?? 0) > 0) {
       await client.query('ROLLBACK')
-      return res.status(409).json({ error: 'overlap' })
+      return res.status(409).json({
+        error: 'overlap',
+        conflict: ov.rows[0],
+        message: '該時段已有審核中或已核准的申請',
+      })
     }
 
     const id = randomUUID()
