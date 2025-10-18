@@ -9,7 +9,10 @@ const pool = makePool()
 
 type BookingStatus = 'pending' | 'approved' | 'rejected' | 'cancelled'
 
-/* ---------------- 台北時區規則（固定 3 小時） ---------------- */
+// ---- 固定 3.5 小時 ----
+const DURATION_MS = 3.5 * 60 * 60 * 1000
+
+/* ---------------- 台北時區規則（固定 3.5 小時） ---------------- */
 function getTWParts(d: Date) {
   const fmt = new Intl.DateTimeFormat('zh-TW', {
     timeZone: 'Asia/Taipei',
@@ -43,10 +46,18 @@ function ruleCheckTW(start: Date): { ok: boolean; reason?: string } {
   const { hour, minute, wk } = getTWParts(start)
   if (wk === 0) return { ok: false, reason: '週日不開放借用' }
   if (hour < 7) return { ok: false, reason: '最早可申請 07:00' }
-  const endHour = hour + 3
-  const endMinute = minute
+
+  // +3.5 小時（多 30 分）
+  let endHour = hour + 3
+  let endMinute = minute + 30
+  if (endMinute >= 60) { endHour += 1; endMinute -= 60 }
+
   const limit = (wk === 1 || wk === 3) ? { h: 18, m: 0 } : { h: 21, m: 30 }
-  if (endHour > limit.h || (endHour === limit.h && endMinute > limit.m)) {
+  const exceed =
+    endHour > limit.h ||
+    (endHour === limit.h && endMinute > limit.m)
+
+  if (exceed) {
     return {
       ok: false,
       reason: `該日最晚結束 ${String(limit.h).padStart(2, '0')}:${String(limit.m).padStart(2, '0')}`,
@@ -137,7 +148,8 @@ router.post('/', async (req, res) => {
   const rule = ruleCheckTW(startDate)
   if (!rule.ok) return res.status(400).json({ error: 'rule_violation', reason: rule.reason })
 
-  const endDate = new Date(startDate.getTime() + 3 * 60 * 60 * 1000)
+  // 改為 3.5 小時
+  const endDate = new Date(startDate.getTime() + DURATION_MS)
 
   const p = pool
   if (!p) return res.status(503).json({ error: 'db_unavailable' })
@@ -146,7 +158,7 @@ router.post('/', async (req, res) => {
   try {
     await client.query('BEGIN')
 
-    // ❶ 只把 pending / approved 視為「會占用」的時段（rejected / cancelled / NULL 一律不擋）
+    // 只把 pending / approved 視為會佔用（rejected/cancelled 不擋）
     const overlapSQL = `
       SELECT id, start_ts, end_ts, venue, status
       FROM bookings

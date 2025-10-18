@@ -160,7 +160,7 @@ export default function RepeatTwoWeeksFlexiblePicker({
         </div>
       )}
 
-      <div className="mt-2 text-sm text-zinc-500">將建立：{starts.length} 筆（每筆固定 3 小時）</div>
+      <div className="mt-2 text-sm text-zinc-500">將建立：{starts.length} 筆（每筆固定 3.5 小時）</div>
     </div>
   )
 }
