@@ -9,10 +9,7 @@ const pool = makePool()
 
 type BookingStatus = 'pending' | 'approved' | 'rejected' | 'cancelled'
 
-// ---- 申請時段固定 3.5 小時 ----
-const DURATION_MS = 3.5 * 60 * 60 * 1000
-
-/* ---------------- 台北時區規則（固定 3.5 小時） ---------------- */
+/* ---------------- 台北時區規則（固定 3 小時） ---------------- */
 function getTWParts(d: Date) {
   const fmt = new Intl.DateTimeFormat('zh-TW', {
     timeZone: 'Asia/Taipei',
@@ -26,7 +23,9 @@ function getTWParts(d: Date) {
   })
   const parts = fmt.formatToParts(d)
   const byType: Record<string, string> = {}
-  parts.forEach((p) => { if (p.type !== 'literal') byType[p.type] = p.value })
+  parts.forEach((p) => {
+    if (p.type !== 'literal') byType[p.type] = p.value
+  })
   const hour = Number(byType.hour)
   const minute = Number(byType.minute)
   const wkStr = byType.weekday
@@ -44,21 +43,13 @@ function ruleCheckTW(start: Date): { ok: boolean; reason?: string } {
   const { hour, minute, wk } = getTWParts(start)
   if (wk === 0) return { ok: false, reason: '週日不開放借用' }
   if (hour < 7) return { ok: false, reason: '最早可申請 07:00' }
-
-  // +3.5 小時的結束時間（含 30 分鐘進位）
-  let endHour = hour + 3
-  let endMinute = minute + 30
-  if (endMinute >= 60) { endHour += 1; endMinute -= 60 }
-
+  const endHour = hour + 3
+  const endMinute = minute
   const limit = (wk === 1 || wk === 3) ? { h: 18, m: 0 } : { h: 21, m: 30 }
-  const exceed =
-    endHour > limit.h ||
-    (endHour === limit.h && endMinute > limit.m)
-
-  if (exceed) {
+  if (endHour > limit.h || (endHour === limit.h && endMinute > limit.m)) {
     return {
       ok: false,
-      reason: `該日最晚結束 ${String(limit.h).padStart(2,'0')}:${String(limit.m).padStart(2,'0')}`,
+      reason: `該日最晚結束 ${String(limit.h).padStart(2, '0')}:${String(limit.m).padStart(2, '0')}`,
     }
   }
   return { ok: true }
@@ -69,7 +60,7 @@ const trim = (v: unknown) => (typeof v === 'string' ? v.trim() : v)
 
 const VenueInput = z
   .preprocess(trim, z.enum(['大會堂', '康樂廳', '其它教室', '其他教室']))
-  .transform(v => (v === '其他教室' ? ('其它教室' as const) : (v as '大會堂' | '康樂廳' | '其它教室')))
+  .transform((v) => (v === '其他教室' ? ('其它教室' as const) : (v as '大會堂' | '康樂廳' | '其它教室')))
 
 const CreateBody = z.object({
   start: z.preprocess(trim, z.string().min(10)), // ISO 字串
@@ -130,10 +121,14 @@ router.post('/', async (req, res) => {
 
   // 有填才驗證 email/phone
   if (data.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) {
-    return res.status(400).json({ error: 'invalid_body', details: { fieldErrors: { email: ['Invalid email'] }, formErrors: [] } })
+    return res
+      .status(400)
+      .json({ error: 'invalid_body', details: { fieldErrors: { email: ['Invalid email'] }, formErrors: [] } })
   }
   if (data.phone && data.phone.length < 5) {
-    return res.status(400).json({ error: 'invalid_body', details: { fieldErrors: { phone: ['Too short'] }, formErrors: [] } })
+    return res
+      .status(400)
+      .json({ error: 'invalid_body', details: { fieldErrors: { phone: ['Too short'] }, formErrors: [] } })
   }
 
   const startDate = new Date(data.start)
@@ -142,7 +137,7 @@ router.post('/', async (req, res) => {
   const rule = ruleCheckTW(startDate)
   if (!rule.ok) return res.status(400).json({ error: 'rule_violation', reason: rule.reason })
 
-  const endDate = new Date(startDate.getTime() + DURATION_MS)
+  const endDate = new Date(startDate.getTime() + 3 * 60 * 60 * 1000)
 
   const p = pool
   if (!p) return res.status(503).json({ error: 'db_unavailable' })
@@ -151,7 +146,7 @@ router.post('/', async (req, res) => {
   try {
     await client.query('BEGIN')
 
-    // 只把 pending / approved 視為「會占用」的時段
+    // ❶ 只把 pending / approved 視為「會占用」的時段（rejected / cancelled / NULL 一律不擋）
     const overlapSQL = `
       SELECT id, start_ts, end_ts, venue, status
       FROM bookings
@@ -175,7 +170,8 @@ router.post('/', async (req, res) => {
       INSERT INTO bookings (id, start_ts, end_ts, created_by, status, category, venue, note)
       VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7)
     `
-    const displayName = data.applicantName && data.applicantName !== '' ? data.applicantName : '（未填）'
+    const displayName =
+      data.applicantName && data.applicantName !== '' ? data.applicantName : '（未填）'
     const extra =
       `${data.note ?? ''}` +
       `${data.email ? `\nEmail: ${data.email}` : ''}` +
@@ -185,14 +181,16 @@ router.post('/', async (req, res) => {
       id,
       startDate.toISOString(),
       endDate.toISOString(),
-      displayName,
+      displayName, // created_by
       data.category,
       data.venue, // 已正規化
       extra.trim(),
     ])
 
     await client.query('COMMIT')
-    res.status(201).json({ id, start_ts: startDate.toISOString(), end_ts: endDate.toISOString() })
+    res
+      .status(201)
+      .json({ id, start_ts: startDate.toISOString(), end_ts: endDate.toISOString() })
   } catch (err) {
     await client.query('ROLLBACK')
     console.error('[bookings] create error:', err)
@@ -209,7 +207,9 @@ router.get('/approved', async (req, res) => {
     const rows = await listBookings(days, 'approved')
     res.json({ items: rows })
   } catch (err: any) {
-    res.status(typeof err?.status === 'number' ? err.status : 500).json({ error: 'internal_error' })
+    res
+      .status(typeof err?.status === 'number' ? err.status : 500)
+      .json({ error: 'internal_error' })
   }
 })
 
@@ -220,12 +220,16 @@ router.get('/list', async (req, res) => {
     const days = Number.isFinite(rawDays) ? Math.max(1, Math.min(180, rawDays)) : 60
     const s = String(req.query.status || '').trim().toLowerCase() as BookingStatus | ''
     const status: BookingStatus | undefined =
-      s === 'approved' || s === 'rejected' || s === 'cancelled' || s === 'pending' ? s : undefined
+      s === 'approved' || s === 'rejected' || s === 'cancelled' || s === 'pending'
+        ? s
+        : undefined
 
     const rows = await listBookings(days, status)
     res.json({ items: rows })
   } catch (err: any) {
-    res.status(typeof err?.status === 'number' ? err.status : 500).json({ error: 'internal_error' })
+    res
+      .status(typeof err?.status === 'number' ? err.status : 500)
+      .json({ error: 'internal_error' })
   }
 })
 
