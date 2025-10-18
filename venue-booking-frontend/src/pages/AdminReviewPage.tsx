@@ -163,17 +163,13 @@ export default function AdminReviewPage() {
       .filter((it) => {
         if (!q.trim()) return true
         const c = parseContact(it.note)
-        const hay = [
-          it.created_by ?? '',
-          it.category ?? '',
-          it.note ?? '',
-          c.venue,
-          c.name,
-          c.email,
-          c.phone,
-        ]
-          .join(' ')
-          .toLowerCase()
+     const hay = [
+  it.id,                        // ★ 新增這行，方便用 ID 搜尋
+  it.created_by ?? '',
+  it.category ?? '',
+  it.note ?? '',
+  c.venue, c.name, c.email, c.phone,
+].join(' ').toLowerCase()
         return hay.includes(q.toLowerCase())
       })
       .sort((a, b) => new Date(a.start_ts).getTime() - new Date(b.start_ts).getTime())
