@@ -1,153 +1,126 @@
-// src/server/index.ts
-import 'dotenv/config'
-import express from 'express'
+import express, { type Request, type Response, type NextFunction, Router } from 'express'
 import cors from 'cors'
-import helmet from 'helmet'
 import cookieParser from 'cookie-parser'
 import session from 'express-session'
-import pg from 'pg'
-import connectPgSimple from 'connect-pg-simple'
-import rateLimit from 'express-rate-limit'
 
-import termsRouter from './routes/terms.route'
-import bookingsRouter from './routes/bookings'
-import adminRouter from './routes/admin'
-import { makePool } from './db'
-
-/**
- * ----------------------------------------------------------------
- * 基本設定
- * ----------------------------------------------------------------
- */
+// ------------------------
+// Basic app bootstrap
+// ------------------------
 const app = express()
-app.set('trust proxy', 1) // 在 Render/反向代理後面，確保 secure cookies 正常
 
-const isProd = process.env.NODE_ENV === 'production'
-const PORT = Number(process.env.PORT || 3000)
+// 讓 proxy 後面的 secure cookie 正常運作（如 Render/Heroku）
+app.set('trust proxy', 1)
 
-/**
- * ----------------------------------------------------------------
- * CORS（一定要在任何路由之前）
- * ----------------------------------------------------------------
- *
- * 說明：
- * - 允許帶憑證（Cookie / Session）→ credentials: true
- * - allowlist 來源（可用環境變數 CORS_ORIGINS 自訂，多個以逗號分隔）
- * - 預設已包含本機、staging 與典型的 Render 網域
- */
-const defaultOrigins = [
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-  'https://venue-booking-frontend.onrender.com',
-  'https://venue-booking-frontend-staging.onrender.com',
-  'https://venue-booking-frontend-a3ib.onrender.com', // 你之前貼過的前端域名
-]
+// Parse CORS_ORIGIN as comma-separated list; fallback to true (allow any) for local dev
+const corsOrigins = (process.env.CORS_ORIGIN ?? '').split(',').map(s => s.trim()).filter(Boolean)
+app.use(cors({
+  origin: corsOrigins.length > 0 ? corsOrigins : true,
+  credentials: true,
+}))
 
-const envOrigins = (process.env.CORS_ORIGINS || '')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean)
-
-const allowlist = [...new Set([...defaultOrigins, ...envOrigins])]
-
-app.use(
-  cors({
-    origin(origin, cb) {
-      // 無 Origin（例如 curl/健康檢查）直接允許
-      if (!origin) return cb(null, true)
-      if (allowlist.includes(origin)) return cb(null, true)
-      return cb(new Error(`CORS blocked for origin: ${origin}`))
-    },
-    credentials: true, // 允許帶 Cookie
-    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'X-Requested-With', 'Accept'],
-  })
-)
-
-// 額外處理預檢（可選，但保險）
-app.options('*', cors())
-
-/**
- * ----------------------------------------------------------------
- * 安全性 & 解析
- * ----------------------------------------------------------------
- */
-app.use(helmet())
 app.use(express.json())
+app.use(express.urlencoded({ extended: true }))
 app.use(cookieParser())
 
-/**
- * ----------------------------------------------------------------
- * Session（Postgres Store）
- * ----------------------------------------------------------------
- */
-const PgSession = connectPgSimple(session)
-const pool = makePool() // 你專案既有的 pg Pool 建立器
-if (!pool) {
-  // 若資料庫連不到，至少不要讓服務啟不來
-  console.warn('[server] WARN: Postgres pool is null; session will use MemoryStore (not for prod).')
-}
+// ------------------------
+// Session (non-blocking, Redis optional)
+// ------------------------
+const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-temp-secret-change-me'
+const isProd = process.env.NODE_ENV === 'production'
 
-app.use(
-  session({
-    store: pool ? new PgSession({
-      // connect-pg-simple 允許傳入 pg.Pool 或連線字串
-      pool: (pool as unknown as pg.Pool),
-      tableName: 'session',
-      createTableIfMissing: true,
-    }) : undefined,
-    secret: process.env.SESSION_SECRET || 'dev-secret-change-me',
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      sameSite: 'none',   // 跨網域前後端需要 SameSite=None
-      secure: true,       // 在 https/反向代理後建議一律 true
-      maxAge: 7 * 24 * 3600 * 1000, // 7 天
-    },
-    name: 'vb.sid', // 自訂 cookie 名稱
-  })
-)
+// Use MemoryStore by default to avoid boot blocking. If you later wire Redis, do it in the routers, not here.
+app.use(session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    // 代理（不同子網域）或跨網域時，需要 SameSite=None + Secure 才會送 Cookie
+    sameSite: isProd ? 'none' : 'lax',
+    secure: isProd, // 在 https 環境下為 true
+    maxAge: 1000 * 60 * 60 * 4, // 4h
+  },
+}))
 
-/**
- * ----------------------------------------------------------------
- * Rate Limit（基礎防刷）
- * ----------------------------------------------------------------
- */
-const apiLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 300,
-  standardHeaders: true,
-  legacyHeaders: false,
+// ------------------------
+// Health endpoints — MUST be fast and DB-agnostic
+// ------------------------
+app.get('/healthz', (_req: Request, res: Response) => {
+  // Keep it ultra simple: return 200 immediately. Do NOT touch DB/Redis here.
+  res.status(200).send('ok')
 })
-app.use('/api/', apiLimiter)
 
-/**
- * ----------------------------------------------------------------
- * 健康檢查
- * ----------------------------------------------------------------
- */
-app.get('/healthz', (_req, res) => res.json({ ok: true }))
+// Optional: simple ping for manual tests
+app.get('/api/ping', (_req, res) => {
+  res.json({ ok: true, now: new Date().toISOString() })
+})
 
-/**
- * ----------------------------------------------------------------
- * 路由（注意：一定在 CORS/Session 之後）
- * ----------------------------------------------------------------
- */
-app.use('/api/terms', termsRouter)
-app.use('/api/bookings', bookingsRouter)
-app.use('/api/admin', adminRouter)
+/* ------------------------
+ * 保險用 Terms 直連路由（避免懶載入失敗導致 404）
+ * 放在其他路由之前
+ * ------------------------ */
+declare module 'express-session' {
+  interface SessionData {
+    termsAccepted?: boolean
+  }
+}
 
-/**
- * ----------------------------------------------------------------
- * 啟動
- * ----------------------------------------------------------------
- */
-if (require.main === module) {
-  app.listen(PORT, () => {
-    console.log(`[server] listening on :${PORT}`)
-    console.log(`[server] CORS allowlist:`, allowlist)
+app.get('/api/terms/status', (req, res) => {
+  res.json({
+    enabled: true,
+    accepted: !!req.session?.termsAccepted,
+    updatedAt: new Date().toISOString(),
+  })
+})
+
+app.post('/api/terms/accept', (req, res) => {
+  if (req.session) req.session.termsAccepted = true
+  res.json({ ok: true })
+})
+
+// ------------------------
+// Lazy-mount routers to avoid top-level DB/Redis connects blocking boot
+// ------------------------
+function lazyMount(pathPrefix: string, loader: () => Promise<any>) {
+  let cached: Router | null = null
+  app.use(pathPrefix, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!cached) {
+        const mod = await loader()
+        // try common default export patterns
+        cached = (mod?.default ?? mod?.router ?? mod) as Router
+        if (typeof (cached as any) !== 'function') {
+          throw new Error(`Lazy router at ${pathPrefix} did not export an express Router`)
+        }
+      }
+      return (cached as any)(req, res, next)
+    } catch (err) {
+      next(err)
+    }
   })
 }
 
-export default app
+// Adjust the import paths to match your project structure
+// If these files don’t exist, you can remove or change the lines below.
+lazyMount('/api/admin', () => import('./routes/admin'))
+lazyMount('/api/bookings', () => import('./routes/bookings'))
+lazyMount('/api/terms', () => import('./routes/terms.route')) // 仍保留正式的 terms router（保險 + 正式都在）
+
+// ------------------------
+// Error handler (keep last)
+// ------------------------
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  console.error('[server] Uncaught error:', err)
+  const status = typeof err?.status === 'number' ? err.status : 500
+  res.status(status).json({ error: { message: err?.message ?? 'Internal Server Error' } })
+})
+
+// ------------------------
+// Start server — MUST bind to 0.0.0.0 and use $PORT (Render gives 10000)
+// ------------------------
+const port = Number(process.env.PORT) || 10000
+const host = '0.0.0.0'
+app.listen(port, host, () => {
+  console.log(`[server] listening on http://${host}:${port}`)
+})
