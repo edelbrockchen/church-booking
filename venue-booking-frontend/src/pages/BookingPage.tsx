@@ -1,4 +1,4 @@
-// src/pages/BookingPage.tsx
+// venue-booking-frontend/src/pages/BookingPage.tsx
 import React, { useMemo, useState } from 'react'
 import SubmitWithTermsGate from '../web/components/SubmitWithTermsGate'
 import { apiFetch } from '../web/lib/api'
@@ -7,6 +7,9 @@ import RepeatTwoWeeksFlexiblePicker from '../web/components/RepeatTwoWeeksFlexib
 type Category = '' | '教會聚會' | '社團活動' | '研習' | '其他'
 type Venue = '大會堂' | '康樂廳' | '其它教室'
 type Mode = 'single' | 'repeat'
+
+// === 借用時長（小時） ===
+const DURATION_HOURS = 3.5
 
 function addHours(d: Date, h: number) { return new Date(d.getTime() + h * 3600_000) }
 function fmtLocal(d?: Date | null) {
@@ -17,7 +20,7 @@ function fmtLocal(d?: Date | null) {
 }
 function parseLocal(v: string) { const d = new Date(v); return isNaN(d.getTime()) ? null : d }
 
-/** --- 台北時間規則（以 ISO +08:00 對齊） --- */
+/** --- 台北時間規則（透過 ISO +08:00 建立對齊的時間點） --- */
 function tpeDateKey(d: Date) {
   const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit' })
   return fmt.format(d) // e.g. "2025-10-01"
@@ -31,7 +34,7 @@ function latestCapTPE(d: Date) {
 }
 function isSundayTPE(d: Date) { return tpeDow(d) === 0 }
 
-/** 將任意開始時間調整到「可申請窗口」並回傳狀態（固定 3.5 小時） */
+/** 將任意開始時間調整到「可申請窗口」並回傳狀態（時長使用 DURATION_HOURS） */
 function adjustToWindowTPE(s: Date) {
   if (isSundayTPE(s)) return { status: 'sunday' as const }
   const earliest = earliestOfDayTPE(s)
@@ -39,15 +42,10 @@ function adjustToWindowTPE(s: Date) {
 
   let start = s
   let adjusted = false
-  if (start.getTime() < earliest.getTime()) {
-    start = earliest
-    adjusted = true
-  }
-  if (start.getTime() >= cap.getTime()) {
-    return { status: 'invalid' as const } // 當日可申請窗口已過
-  }
+  if (start.getTime() < earliest.getTime()) { start = earliest; adjusted = true }
+  if (start.getTime() >= cap.getTime()) return { status: 'invalid' as const } // 當日可申請窗口已過
 
-  const targetEnd = addHours(start, 3.5)  // ★ 3.5 小時
+  const targetEnd = addHours(start, DURATION_HOURS)
   const end = new Date(Math.min(targetEnd.getTime(), cap.getTime()))
   const cut = end.getTime() < targetEnd.getTime()
   return { status: (cut || adjusted) ? ('adjusted' as const) : ('ok' as const), start, end, adjusted, cut }
@@ -83,15 +81,16 @@ export default function BookingPage() {
   const singleAdj = adjustToWindowTPE(start)
   const dayCap = latestCapTPE(start)
   const earliest = earliestOfDayTPE(start)
-  const end = (singleAdj as any)?.end ? (singleAdj as any).end as Date : addHours(start, 3.5)
+  const end = (singleAdj as any)?.end ? (singleAdj as any).end as Date : addHours(start, DURATION_HOURS)
 
   const tpeHhmm = (d: Date) =>
     new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false }).format(d)
   const singleAllowedTip = `當日可申請時段（台北）：${tpeHhmm(earliest)} – ${tpeHhmm(dayCap)}（超出自動裁切/調整）`
   const singleEffectiveTip = `實際送出時段：${start.toLocaleString()} → ${end.toLocaleString()}${(singleAdj as any)?.cut || (singleAdj as any)?.adjusted ? '（已調整/裁切）' : ''}`
-  const startMinLocal = fmtLocal(earliest)
+  const startMinLocal = fmtLocal(earliest) // 宣告一次，避免重複
 
-  /* ---------------- 重複模式（最長 2 個月） ---------------- */
+  /* ---------------- 重複模式（兩週可各自選星期） ---------------- */
+  // 以「第一筆開始時間」為基準（兩週會以該週為第 1 週）
   const [firstStartStr, setFirstStartStr] = useState(fmtLocal(now))
   const firstStartISO = useMemo(() => {
     const d = parseLocal(firstStartStr)
@@ -151,19 +150,23 @@ export default function BookingPage() {
       const header = `[場地:${venue}] [姓名:${applicant}] [Email:${email}] [電話:${phone}]`
       const fullNote = header + (reason.trim() ? ` ${reason.trim()}` : '')
 
+      const baseFields = {
+        applicantName: applicant.trim(),
+        email: email.trim(),
+        phone: phone.trim(),
+        venue,
+        note: fullNote,
+        ...(category ? { category } : {})
+      }
+
       if (mode === 'single') {
         const s = parseLocal(startStr)!
         const adj = adjustToWindowTPE(s)
         if ((adj as any).status === 'invalid' || (adj as any).status === 'sunday') {
           throw new Error('該日不可申請或已過上限，請改選其他時間')
         }
-        const payload: any = {
-          start: (adj as any).start.toISOString(),
-          venue,
-          created_by: applicant.trim(),
-          note: fullNote,
-          ...(category ? { category } : {})
-        }
+        const payload: any = { ...baseFields, start: (adj as any).start.toISOString() }
+
         const r = await apiFetch('/api/bookings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -181,13 +184,7 @@ export default function BookingPage() {
         let count = 0
         for (const it of repeatPreview) {
           if (it.start && it.end) {
-            const payload: any = {
-              start: it.start.toISOString(),
-              venue,
-              created_by: applicant.trim(),
-              note: fullNote,
-              ...(category ? { category } : {})
-            }
+            const payload: any = { ...baseFields, start: it.start.toISOString() }
             const rr = await apiFetch('/api/bookings', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -237,6 +234,9 @@ export default function BookingPage() {
   }
 
   /* ---------------- UI ---------------- */
+  // 單日模式：最小可選時間（當日台北最早）
+  // 已在上面宣告：const startMinLocal = fmtLocal(earliest)
+  // 重複模式：預設「第一筆開始」的最小時間（以當天台北 07:00）
   const firstStartMinLocal = useMemo(() => fmtLocal(earliestOfDayTPE(new Date(firstStartISO))), [firstStartISO])
 
   return (
@@ -252,7 +252,7 @@ export default function BookingPage() {
           </label>
           <label className="inline-flex items-center gap-2">
             <input type="radio" name="mode" checked={mode==='repeat'} onChange={()=>setMode('repeat')} />
-            重複日期（最長 2 個月）
+            重複日期（最長 2 週）
           </label>
         </div>
       </div>
@@ -263,19 +263,43 @@ export default function BookingPage() {
         <div className="grid md:grid-cols-2 gap-4">
           <label className="flex flex-col gap-1">
             <span className="text-sm text-slate-600">申請者姓名 <span className="text-rose-600">*</span></span>
-            <input value={applicant} onChange={e=>setApplicant(e.target.value)} placeholder="請輸入姓名" className="rounded-lg border px-3 py-2 placeholder-slate-400" required />
+            <input
+              value={applicant}
+              onChange={e=>setApplicant(e.target.value)}
+              placeholder="請輸入姓名"
+              className="rounded-lg border px-3 py-2 placeholder-slate-400"
+              required
+            />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-sm text-slate-600">電子郵件 <span className="text-rose-600">*</span></span>
-            <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="name@example.com" className="rounded-lg border px-3 py-2 placeholder-slate-400" required />
+            <input
+              type="email"
+              value={email}
+              onChange={e=>setEmail(e.target.value)}
+              placeholder="name@example.com"
+              className="rounded-lg border px-3 py-2 placeholder-slate-400"
+              required
+            />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-sm text-slate-600">聯絡電話 <span className="text-rose-600">*</span></span>
-            <input value={phone} onChange={e=>setPhone(e.target.value)} placeholder="例如：0912-345-678" className="rounded-lg border px-3 py-2 placeholder-slate-400" required />
+            <input
+              value={phone}
+              onChange={e=>setPhone(e.target.value)}
+              placeholder="例如：0912-345-678"
+              className="rounded-lg border px-3 py-2 placeholder-slate-400"
+              required
+            />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-sm text-slate-600">場地 <span className="text-rose-600">*</span></span>
-            <select value={venue} onChange={e=>setVenue(e.target.value as Venue)} className="rounded-lg border px-3 py-2" required>
+            <select
+              value={venue}
+              onChange={e=>setVenue(e.target.value as Venue)}
+              className="rounded-lg border px-3 py-2"
+              required
+            >
               <option value="大會堂">大會堂</option>
               <option value="康樂廳">康樂廳</option>
               <option value="其它教室">其它教室</option>
@@ -301,7 +325,15 @@ export default function BookingPage() {
 
           <label className="md:col-span-2 flex flex-col gap-1">
             <span className="text-sm text-slate-600">申請原因 <span className="text-rose-600">*</span>（最多 200 字）</span>
-            <textarea value={reason} onChange={e=>setReason(e.target.value)} rows={4} maxLength={200} placeholder="請敘明活動內容、需求等" className="rounded-lg border px-3 py-2" required />
+            <textarea
+              value={reason}
+              onChange={e=>setReason(e.target.value)}
+              rows={4}
+              maxLength={200}
+              placeholder="請敘明活動內容、需求等"
+              className="rounded-lg border px-3 py-2"
+              required
+            />
           </label>
         </div>
       </div>
@@ -315,7 +347,13 @@ export default function BookingPage() {
             <div className="grid md:grid-cols-2 gap-4">
               <label className="flex flex-col gap-1">
                 <span className="text-sm text-slate-600">開始時間（每日最早 07:00；以台北時間計）</span>
-                <input type="datetime-local" value={startStr} onChange={e => setStartStr(e.target.value)} className="rounded-lg border px-3 py-2" min={startMinLocal} />
+                <input
+                  type="datetime-local"
+                  value={startStr}
+                  onChange={e => setStartStr(e.target.value)}
+                  className="rounded-lg border px-3 py-2"
+                  min={startMinLocal}
+                />
                 <div className="text-xs text-slate-500">{singleAllowedTip}</div>
               </label>
 
@@ -330,10 +368,17 @@ export default function BookingPage() {
           </>
         ) : (
           <>
+            {/* 兩週彈性選擇：以「第一筆開始時間」為基準 */}
             <div className="grid md:grid-cols-2 gap-4">
               <label className="flex flex-col gap-1">
-                <span className="text-sm text-slate-600">第一筆開始時間（做為多週的基準；以台北時間計）</span>
-                <input type="datetime-local" value={firstStartStr} onChange={e => setFirstStartStr(e.target.value)} className="rounded-lg border px-3 py-2" min={firstStartMinLocal} />
+                <span className="text-sm text-slate-600">第一筆開始時間（作為兩週的基準；以台北時間計）</span>
+                <input
+                  type="datetime-local"
+                  value={firstStartStr}
+                  onChange={e => setFirstStartStr(e.target.value)}
+                  className="rounded-lg border px-3 py-2"
+                  min={firstStartMinLocal}
+                />
                 <div className="text-xs text-slate-500">每日最早 07:00；週一/週三最晚 18:00；其餘至 21:30；週日不可申請。</div>
               </label>
             </div>
@@ -343,8 +388,6 @@ export default function BookingPage() {
                 firstStartISO={firstStartISO}
                 initialEnabled={true}
                 initialPerWeek={true}
-                maxWeeks={9}        // 上限：2 個月（約 9 週）
-                defaultWeeks={8}    // 預設顯示 8 週
                 onStartsPreview={setStartsFromPicker}
               />
             </div>
@@ -398,7 +441,7 @@ export default function BookingPage() {
       {resultMsg && <div className="text-sm text-emerald-700">{resultMsg}</div>}
 
       <p className="text-xs text-slate-500">
-        規範以台北時間計：每日最早 07:00；週一/週三最晚 18:00；其他至 21:30；週日禁用。單日最多 3.5 小時。重複日期最長 2 個月。
+        規範以台北時間計：每日最早 07:00；週一/週三最晚 18:00；其他至 21:30；週日禁用。每一日最多 {DURATION_HOURS} 小時。重複日期最長 2 週。
       </p>
     </div>
   )
