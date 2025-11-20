@@ -105,7 +105,7 @@ export default function AdminReviewPage() {
       if (v) set.add(v)
     }
     const list = Array.from(set) as VenueFilter[]
-    const valid = ['大會堂', '康樂廳', '慈助會教室', '廚房', '其它教室']
+    const valid = ['大會堂', '康樂廳', '其它教室', '慈助會教室', '廚房']
     const ordered = valid.filter(v => list.includes(v as VenueFilter)) as VenueFilter[]
     return (['all' as const, ...ordered]) as VenueFilter[]
   }, [items])
