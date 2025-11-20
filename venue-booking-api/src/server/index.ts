@@ -9,7 +9,7 @@ import pg from 'pg'
 import connectPgSimple from 'connect-pg-simple'
 import rateLimit from 'express-rate-limit'
 
-import termsRouter from './routes/terms'
+import termsRouter from './routes/terms.route'
 import bookingsRouter from './routes/bookings'
 import adminRouter from './routes/admin'
 import { makePool } from './db'
