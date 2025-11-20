@@ -5,13 +5,14 @@ import { apiFetch } from '../web/lib/api'
 import RepeatTwoWeeksFlexiblePicker from '../web/components/RepeatTwoWeeksFlexiblePicker'
 
 type Category = '' | '教會聚會' | '社團活動' | '研習' | '其他'
-type Venue = '大會堂' | '康樂廳' | '其它教室'
+type Venue = '大會堂' | '康樂廳' | '慈助會教室' | '廚房' | '其它教室'
 type Mode = 'single' | 'repeat'
 
-// === 借用時長（小時） ===
-const DURATION_HOURS = 3.5
-
 function addHours(d: Date, h: number) { return new Date(d.getTime() + h * 3600_000) }
+function fmtDate(d: Date) {
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), dd = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${dd}`
+}
 function fmtLocal(d?: Date | null) {
   if (!d) return ''
   const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), dd = String(d.getDate()).padStart(2, '0')
@@ -34,7 +35,7 @@ function latestCapTPE(d: Date) {
 }
 function isSundayTPE(d: Date) { return tpeDow(d) === 0 }
 
-/** 將任意開始時間調整到「可申請窗口」並回傳狀態（時長使用 DURATION_HOURS） */
+/** 將任意開始時間調整到「可申請窗口」並回傳狀態（長度固定 3.5 小時） */
 function adjustToWindowTPE(s: Date) {
   if (isSundayTPE(s)) return { status: 'sunday' as const }
   const earliest = earliestOfDayTPE(s)
@@ -42,10 +43,15 @@ function adjustToWindowTPE(s: Date) {
 
   let start = s
   let adjusted = false
-  if (start.getTime() < earliest.getTime()) { start = earliest; adjusted = true }
-  if (start.getTime() >= cap.getTime()) return { status: 'invalid' as const } // 當日可申請窗口已過
+  if (start.getTime() < earliest.getTime()) {
+    start = earliest
+    adjusted = true
+  }
+  if (start.getTime() >= cap.getTime()) {
+    return { status: 'invalid' as const } // 當日可申請窗口已過
+  }
 
-  const targetEnd = addHours(start, DURATION_HOURS)
+  const targetEnd = addHours(start, 3.5) // ★ 3.5 小時
   const end = new Date(Math.min(targetEnd.getTime(), cap.getTime()))
   const cut = end.getTime() < targetEnd.getTime()
   return { status: (cut || adjusted) ? ('adjusted' as const) : ('ok' as const), start, end, adjusted, cut }
@@ -81,16 +87,14 @@ export default function BookingPage() {
   const singleAdj = adjustToWindowTPE(start)
   const dayCap = latestCapTPE(start)
   const earliest = earliestOfDayTPE(start)
-  const end = (singleAdj as any)?.end ? (singleAdj as any).end as Date : addHours(start, DURATION_HOURS)
+  const end = (singleAdj as any)?.end ? (singleAdj as any).end as Date : addHours(start, 3.5)
 
   const tpeHhmm = (d: Date) =>
     new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false }).format(d)
   const singleAllowedTip = `當日可申請時段（台北）：${tpeHhmm(earliest)} – ${tpeHhmm(dayCap)}（超出自動裁切/調整）`
   const singleEffectiveTip = `實際送出時段：${start.toLocaleString()} → ${end.toLocaleString()}${(singleAdj as any)?.cut || (singleAdj as any)?.adjusted ? '（已調整/裁切）' : ''}`
-  const startMinLocal = fmtLocal(earliest) // 宣告一次，避免重複
 
-  /* ---------------- 重複模式（兩週可各自選星期） ---------------- */
-  // 以「第一筆開始時間」為基準（兩週會以該週為第 1 週）
+  /* ---------------- 重複模式（最多 8 週；兩週彈性選擇元件仍可用於多週產生器） ---------------- */
   const [firstStartStr, setFirstStartStr] = useState(fmtLocal(now))
   const firstStartISO = useMemo(() => {
     const d = parseLocal(firstStartStr)
@@ -150,23 +154,21 @@ export default function BookingPage() {
       const header = `[場地:${venue}] [姓名:${applicant}] [Email:${email}] [電話:${phone}]`
       const fullNote = header + (reason.trim() ? ` ${reason.trim()}` : '')
 
-      const baseFields = {
-        applicantName: applicant.trim(),
-        email: email.trim(),
-        phone: phone.trim(),
-        venue,
-        note: fullNote,
-        ...(category ? { category } : {})
-      }
-
       if (mode === 'single') {
         const s = parseLocal(startStr)!
         const adj = adjustToWindowTPE(s)
         if ((adj as any).status === 'invalid' || (adj as any).status === 'sunday') {
           throw new Error('該日不可申請或已過上限，請改選其他時間')
         }
-        const payload: any = { ...baseFields, start: (adj as any).start.toISOString() }
-
+        const payload: any = {
+          start: (adj as any).start.toISOString(),
+          venue,
+          applicantName: applicant.trim(),
+          email: email.trim(),
+          phone: phone.trim(),
+          note: fullNote,
+          ...(category ? { category } : {})
+        }
         const r = await apiFetch('/api/bookings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -184,7 +186,15 @@ export default function BookingPage() {
         let count = 0
         for (const it of repeatPreview) {
           if (it.start && it.end) {
-            const payload: any = { ...baseFields, start: it.start.toISOString() }
+            const payload: any = {
+              start: it.start.toISOString(),
+              venue,
+              applicantName: applicant.trim(),
+              email: email.trim(),
+              phone: phone.trim(),
+              note: fullNote,
+              ...(category ? { category } : {})
+            }
             const rr = await apiFetch('/api/bookings', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -233,9 +243,8 @@ export default function BookingPage() {
     }
   }
 
-  /* ---------------- UI ---------------- */
   // 單日模式：最小可選時間（當日台北最早）
-  // 已在上面宣告：const startMinLocal = fmtLocal(earliest)
+  const startMinLocal = fmtLocal(earliestOfDayTPE(start))
   // 重複模式：預設「第一筆開始」的最小時間（以當天台北 07:00）
   const firstStartMinLocal = useMemo(() => fmtLocal(earliestOfDayTPE(new Date(firstStartISO))), [firstStartISO])
 
@@ -300,8 +309,11 @@ export default function BookingPage() {
               className="rounded-lg border px-3 py-2"
               required
             >
+              {/* 指定排序，將「其它教室」放最後 */}
               <option value="大會堂">大會堂</option>
               <option value="康樂廳">康樂廳</option>
+              <option value="慈助會教室">慈助會教室</option>
+              <option value="廚房">廚房</option>
               <option value="其它教室">其它教室</option>
             </select>
           </label>
@@ -368,10 +380,10 @@ export default function BookingPage() {
           </>
         ) : (
           <>
-            {/* 兩週彈性選擇：以「第一筆開始時間」為基準 */}
+            {/* 兩週彈性選擇元件仍可沿用；實際上你可替換成 8 週版的 picker */}
             <div className="grid md:grid-cols-2 gap-4">
               <label className="flex flex-col gap-1">
-                <span className="text-sm text-slate-600">第一筆開始時間（作為兩週的基準；以台北時間計）</span>
+                <span className="text-sm text-slate-600">第一筆開始時間（作為多週的基準；以台北時間計）</span>
                 <input
                   type="datetime-local"
                   value={firstStartStr}
@@ -441,7 +453,7 @@ export default function BookingPage() {
       {resultMsg && <div className="text-sm text-emerald-700">{resultMsg}</div>}
 
       <p className="text-xs text-slate-500">
-        規範以台北時間計：每日最早 07:00；週一/週三最晚 18:00；其他至 21:30；週日禁用。每一日最多 {DURATION_HOURS} 小時。重複日期最長 8 週。
+        規範以台北時間計：每日最早 07:00；週一/週三最晚 18:00；其他至 21:30；週日禁用。每一日最多 3.5 小時。重複日期最長 8 週。
       </p>
     </div>
   )
