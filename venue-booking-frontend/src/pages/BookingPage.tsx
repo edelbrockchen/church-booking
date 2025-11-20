@@ -275,11 +275,11 @@ export default function BookingPage() {
           <label className="flex flex-col gap-1">
             <span className="text-sm text-slate-600">場地 <span className="text-rose-600">*</span></span>
             <select value={venue} onChange={e=>setVenue(e.target.value as Venue)} className="rounded-lg border px-3 py-2" required>
-              <option value="大會堂">大會堂</option>
-              <option value="康樂廳">康樂廳</option>
-              <option value="其它教室">其它教室</option>
-              <option value="慈助會教室">慈助會教室</option>
-              <option value="廚房">廚房</option>
+  <option value="大會堂">大會堂</option>
+  <option value="康樂廳">康樂廳</option>
+  <option value="慈助會教室">慈助會教室</option>
+  <option value="廚房">廚房</option>
+  <option value="其它教室">其它教室</option>
             </select>
           </label>
         </div>
