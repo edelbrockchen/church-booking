@@ -43,7 +43,7 @@ function ruleCheckTW(start: Date): { ok: boolean; reason?: string } {
   if (wk === 0) return { ok: false, reason: '週日不開放借用' }
   if (hour < 7) return { ok: false, reason: '最早可申請 07:00' }
 
-  // 計算「開始 + 3.5 小時」是否超過當日上限
+  // 開始 + 3.5 小時是否超過當日上限
   let endHour = hour + 3
   let endMinute = minute + 30
   if (endMinute >= 60) { endHour += 1; endMinute -= 60 }
@@ -59,12 +59,19 @@ function ruleCheckTW(start: Date): { ok: boolean; reason?: string } {
 const trim = (v: unknown) => (typeof v === 'string' ? v.trim() : v)
 
 const VenueInput = z
-  .preprocess(trim, z.enum(['大會堂', '康樂廳', '其它教室', '其他教室']))
-  .transform(v => (v === '其他教室' ? ('其它教室' as const) : (v as '大會堂' | '康樂廳' | '其它教室')))
+  .preprocess(trim, z.enum([
+    '大會堂', '康樂廳', '其它教室', '其他教室',
+    '慈助會教室', '廚房',
+  ]))
+  .transform(v =>
+    v === '其他教室'
+      ? ('其它教室' as const)
+      : (v as '大會堂' | '康樂廳' | '其它教室' | '慈助會教室' | '廚房')
+  )
 
 const CreateBody = z.object({
-  start: z.preprocess(trim, z.string().min(10)),   // ISO 字串
-  applicantName: z.preprocess(trim, z.string().optional()), // 可選（前端若有就帶）
+  start: z.preprocess(trim, z.string().min(10)),
+  applicantName: z.preprocess(trim, z.string().optional()),
   email: z.preprocess(trim, z.string().optional()),
   phone: z.preprocess(trim, z.string().optional()),
   venue: VenueInput,
@@ -100,30 +107,15 @@ async function listBookings(days: number, status?: BookingStatus) {
 
 /* ---------------- 建立申請單 ---------------- */
 router.post('/', async (req, res) => {
-  // 🔒 相容舊鍵名 → 映射到新欄位（讓老前端/表單也能用）
+  // 相容舊鍵名
   const body: any = { ...(req.body ?? {}) }
-
-  // 申請者姓名：優先 applicantName，其次相容舊鍵名/欄位
   if (!body.applicantName) {
-    body.applicantName =
-      body.created_by ?? body.applicant ?? body.applicant_name ?? body.name ?? body.requester ?? ''
+    body.applicantName = body.created_by ?? body.applicant ?? body.applicant_name ?? body.name ?? body.requester ?? ''
   }
-  // Email 相容
-  if (!body.email) {
-    body.email = body.emailAddress ?? body.mail ?? body.contactEmail ?? ''
-  }
-  // Phone 相容
-  if (!body.phone) {
-    body.phone = body.tel ?? body.mobile ?? body.phoneNumber ?? ''
-  }
-  // 類別相容（若你之前用 purpose/reason 當分類，可自動帶入）
-  if (!body.category && typeof body.purpose === 'string') {
-    body.category = body.purpose
-  }
-  // 備註相容（若有 reason 想合併到 note）
-  if (!body.note && typeof body.reason === 'string') {
-    body.note = body.reason
-  }
+  if (!body.email) body.email = body.emailAddress ?? body.mail ?? body.contactEmail ?? ''
+  if (!body.phone) body.phone = body.tel ?? body.mobile ?? body.phoneNumber ?? ''
+  if (!body.category && typeof body.purpose === 'string') body.category = body.purpose
+  if (!body.note && typeof body.reason === 'string') body.note = body.reason
 
   const parsed = CreateBody.safeParse(body)
   if (!parsed.success) {
@@ -131,7 +123,6 @@ router.post('/', async (req, res) => {
   }
   const data = parsed.data as CreateInput
 
-  // 有填才驗證 email/phone
   if (data.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) {
     return res.status(400).json({ error: 'invalid_body', details: { fieldErrors: { email: ['Invalid email'] }, formErrors: [] } })
   }
@@ -145,7 +136,7 @@ router.post('/', async (req, res) => {
   const rule = ruleCheckTW(startDate)
   if (!rule.ok) return res.status(400).json({ error: 'rule_violation', reason: rule.reason })
 
-  // 固定時長：3.5 小時
+  // 固定 3.5 小時
   const endDate = new Date(startDate.getTime() + 3.5 * 60 * 60 * 1000)
 
   const p = pool
@@ -155,7 +146,7 @@ router.post('/', async (req, res) => {
   try {
     await client.query('BEGIN')
 
-    // ✅ 只把 pending/approved 視為「會占用」的時段（rejected/cancelled 不擋）
+    // 只擋 pending/approved
     const overlapSQL = `
       SELECT id, start_ts, end_ts, venue, status
       FROM bookings
@@ -180,8 +171,6 @@ router.post('/', async (req, res) => {
       VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7)
     `
     const displayName = data.applicantName && data.applicantName !== '' ? data.applicantName : '（未填）'
-
-    // 將聯絡資訊也收納在 note 末端，供審核畫面解析顯示
     const extra =
       `${data.note ?? ''}` +
       `${data.email ? `\nEmail: ${data.email}` : ''}` +
@@ -191,9 +180,9 @@ router.post('/', async (req, res) => {
       id,
       startDate.toISOString(),
       endDate.toISOString(),
-      displayName,   // created_by
+      displayName,
       data.category,
-      data.venue,    // 已正規化
+      data.venue,
       (extra || '').trim(),
     ])
 
