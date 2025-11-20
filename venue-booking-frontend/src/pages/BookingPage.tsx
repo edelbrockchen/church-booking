@@ -252,7 +252,7 @@ export default function BookingPage() {
           </label>
           <label className="inline-flex items-center gap-2">
             <input type="radio" name="mode" checked={mode==='repeat'} onChange={()=>setMode('repeat')} />
-            重複日期（最長 2 週）
+            重複日期（最長 8 週）
           </label>
         </div>
       </div>
@@ -441,7 +441,7 @@ export default function BookingPage() {
       {resultMsg && <div className="text-sm text-emerald-700">{resultMsg}</div>}
 
       <p className="text-xs text-slate-500">
-        規範以台北時間計：每日最早 07:00；週一/週三最晚 18:00；其他至 21:30；週日禁用。每一日最多 {DURATION_HOURS} 小時。重複日期最長 2 週。
+        規範以台北時間計：每日最早 07:00；週一/週三最晚 18:00；其他至 21:30；週日禁用。每一日最多 {DURATION_HOURS} 小時。重複日期最長 8 週。
       </p>
     </div>
   )
