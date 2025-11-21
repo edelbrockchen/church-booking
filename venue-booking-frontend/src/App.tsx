@@ -53,7 +53,7 @@ export default function App() {
       <nav className="flex items-center gap-3 mb-4">
         <div className="flex items-center gap-2 mr-2">
           <img
-            src="/logo.png"
+            src="/logo.svg"
             alt="南投場地借用系統 Logo"
             className="h-8 w-auto select-none"
             draggable={false}
