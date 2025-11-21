@@ -226,7 +226,7 @@ export default function AdminReviewPage() {
   return (
     <div className="max-w-6xl mx-auto p-4 space-y-6">
       <h2 className="text-2xl font-bold flex items-center gap-2">
-  <img src="/logo-icon.svg" alt="" className="h-6 w-6" />
+  <img src="/logo-icon.png" alt="" className="h-6 w-6" />
   管理審核
 </h2>
 
