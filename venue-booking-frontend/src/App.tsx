@@ -29,7 +29,7 @@ export default function App() {
         const ok = await fetchAgreementFromServer()
         if (alive) setAgreed(ok)
       } catch {
-        // 忽略網路錯誤，保持本地狀態
+        /* ignore */
       } finally {
         if (alive) setChecking(false)
       }
@@ -49,7 +49,20 @@ export default function App() {
 
   return (
     <div className="mx-auto max-w-6xl p-4">
-      <nav className="flex gap-3 mb-4">
+      {/* 導覽列（含 Logo） */}
+      <nav className="flex items-center gap-3 mb-4">
+        <div className="flex items-center gap-2 mr-2">
+          <img
+            src="/logo.svg"
+            alt="南投場地借用系統 Logo"
+            className="h-8 w-auto select-none"
+            draggable={false}
+          />
+          <span className="hidden sm:inline text-lg font-semibold text-zinc-800">
+            南投場地借用系統
+          </span>
+        </div>
+
         <button
           onClick={() => setTab('calendar')}
           className={`${btnBase} ${tab === 'calendar' ? btnActive : btnInactive}`}
@@ -78,17 +91,7 @@ export default function App() {
 
       {/* 你若想在 checking=true 時顯示 Loading，可在此加載入指示 */}
       {tab === 'calendar' && <CalendarPage />}
-
-      {/* 傳入 onAgreed：RulesPage 內部會寫入同意並呼叫這個回呼 */}
-      {tab === 'rules' && (
-        <RulesPage
-          onAgreed={() => {
-            setAgreed(true)     // 更新本地狀態（RulesPage 已經寫入 local/server）
-            setTab('apply')      // 直接切到「申請借用」
-          }}
-        />
-      )}
-
+      {tab === 'rules' && <RulesPage />}
       {tab === 'apply' && <BookingPage />}
       {tab === 'admin' && <AdminReviewPage />}
 
