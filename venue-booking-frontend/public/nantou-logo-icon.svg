@@ -1,0 +1,21 @@
+<svg width="256" height="320" viewBox="0 0 256 320" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="pinGradient" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#00A2FF"/>
+      <stop offset="100%" stop-color="#00C58E"/>
+    </linearGradient>
+  </defs>
+  <!-- pin body -->
+  <path d="M128 4C72 4 28 48 28 104c0 68 74 152 98 176 2 2 4 3 6 3s4-1 6-3c24-24 98-108 98-176C236 48 184 4 128 4z"
+        fill="url(#pinGradient)"/>
+  <!-- avatar circle -->
+  <circle cx="128" cy="88" r="52" fill="#F3FEFF"/>
+  <!-- calendar/card -->
+  <rect x="74" y="132" width="108" height="92" rx="12" fill="#182638"/>
+  <rect x="74" y="132" width="108" height="30" rx="12" fill="#1496FF"/>
+  <!-- card dots -->
+  <circle cx="96" cy="146" r="6" fill="#F3FEFF"/>
+  <circle cx="160" cy="146" r="6" fill="#F3FEFF"/>
+  <!-- check mark -->
+  <path d="M104 188l24 24 40-44" fill="none" stroke="#1FD16F" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
