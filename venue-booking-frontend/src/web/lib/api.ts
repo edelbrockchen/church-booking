@@ -171,7 +171,7 @@ export type BookingCreateInput = {
   applicantName: string
   email: string
   phone: string
-  venue: '大會堂' | '康樂廳' | '其它教室'
+  venue: '大會堂' | '康樂廳' | '其它教室' | '慈助會教室' | '廚房'
   category: string
   note?: string
 }
