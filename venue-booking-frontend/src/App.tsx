@@ -60,12 +60,13 @@ export default function App() {
     <div className="mx-auto max-w-6xl p-4">
       {/* 上方導覽列：白底卡片，左 Logo + 標題，右按鈕列 */}
       <header className="mb-6 rounded-2xl bg-white shadow-sm border border-slate-200 px-4 py-3 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-        {/* 左側：Logo + 系統名稱 */}
+        {/* 左側：Icon + 系統名稱 */}
         <div className="flex items-center gap-3">
+          {/* 使用只有圖示的 icon 版 */}
           <img
-            src="/nantou-logo-header.svg"
+            src="/nantou-logo-icon.svg"
             alt="南投支會"
-            className="h-12 md:h-14"
+            className="h-10 md:h-11"
           />
           <div className="flex flex-col">
             <span className="text-lg md:text-xl font-bold leading-tight">
@@ -130,7 +131,7 @@ export default function App() {
         onAgreed={async () => {
           setAgreedLocal()
           try {
-            await recordAgreementFromServer()
+            await recordAgreementOnServer()
           } catch {
             // 忽略錯誤
           }
