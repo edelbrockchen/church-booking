@@ -49,6 +49,23 @@ export default function App() {
 
   return (
     <div className="mx-auto max-w-6xl p-4">
+      {/* ✅ 新增的 Logo 區塊 */}
+      <header className="mb-4 flex items-center gap-3">
+        <img
+          src="/nantou-logo-header.svg"
+          alt="南投支會"
+          className="h-12 md:h-14"
+        />
+        <div className="flex flex-col">
+          <span className="text-lg md:text-xl font-bold leading-tight">
+            南投支會場地借用系統
+          </span>
+          <span className="text-xs text-zinc-300">
+            Nantou Ward Venue Booking
+          </span>
+        </div>
+      </header>
+
       <nav className="flex gap-3 mb-4">
         <button
           onClick={() => setTab('calendar')}
@@ -84,7 +101,7 @@ export default function App() {
         <RulesPage
           onAgreed={() => {
             setAgreed(true)     // 更新本地狀態（RulesPage 已經寫入 local/server）
-            setTab('apply')      // 直接切到「申請借用」
+            setTab('apply')     // 直接切到「申請借用」
           }}
         />
       )}
